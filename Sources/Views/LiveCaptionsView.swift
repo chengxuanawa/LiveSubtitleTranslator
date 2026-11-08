@@ -201,7 +201,7 @@ struct LiveCaptionsView: View {
         if viewModel.audioSourceMode == .systemAudio {
             switch viewModel.state {
             case .idle, .ended:
-                return "点击广播按钮，在系统弹窗中选择「译幕」后开始共享；"+ "停止共享请在控制中心或状态栏点击红点"
+                return "点击广播按钮，在系统弹窗中选择「译幕」后开始共享；停止共享请在控制中心或状态栏点击红点"
             case .listening:
                 if viewModel.isWaitingForBroadcast {
                     return "正在等待系统广播连接…请在系统弹窗中选择本 App"
