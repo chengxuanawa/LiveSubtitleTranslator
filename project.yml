@@ -8,6 +8,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     SWIFT_COMPILATION_MODE: wholemodule
+    GENERATE_INFOPLIST_FILE: "NO"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
@@ -23,6 +24,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo
+        INFOPLIST_FILE: Sources/Resources/Info.plist
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -42,6 +44,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo.widget
+        INFOPLIST_FILE: Widget/Info.plist
         SKIP_INSTALL: "YES"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
   SubLingoBroadcast:
@@ -55,6 +58,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo.broadcast
+        INFOPLIST_FILE: Broadcast/Info.plist
         SKIP_INSTALL: "YES"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 schemes:

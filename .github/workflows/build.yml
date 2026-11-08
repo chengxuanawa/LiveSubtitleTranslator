@@ -46,6 +46,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      # 产物校验：防止 Info.plist 被 GENERATE_INFOPLIST_FILE 覆盖导致缺权限描述 / NSExtension
+      - name: Verify app bundle (Info.plist sanity)
+        run: |
+          APP="build/DerivedData-Device/Build/Products/Release-iphoneos/SubLingo.app"
+          plutil -extract NSMicrophoneUsageDescription raw "$APP/Info.plist" > /dev/null
+          plutil -extract NSSpeechRecognitionUsageDescription raw "$APP/Info.plist" > /dev/null
+          plutil -extract NSSupportsLiveActivities raw "$APP/Info.plist" > /dev/null
+          plutil -extract UIBackgroundModes.0 raw "$APP/Info.plist" > /dev/null
+          plutil -extract UIApplicationSceneManifest.UIApplicationSupportsMultipleScenes raw "$APP/Info.plist" > /dev/null
+          plutil -extract NSExtension.NSExtensionPointIdentifier raw "$APP/PlugIns/SubLingoWidget.appex/Info.plist" > /dev/null
+          plutil -extract NSExtension.NSExtensionPointIdentifier raw "$APP/PlugIns/SubLingoBroadcast.appex/Info.plist" > /dev/null
+          echo "Info.plist sanity check passed"
+
       - name: Package unsigned IPA
         run: |
           APP_PATH=$(find build/DerivedData-Device/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
