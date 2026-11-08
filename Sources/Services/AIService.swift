@@ -6,7 +6,8 @@ import SwiftUI
 final class AIService: ObservableObject {
 
     private let settings: SettingsStore
-    private var appleProvider: AppleIntelligenceProvider?
+    /// 苹果智能 Provider 的存储（AnyObject 承载，避免在不满足 iOS 26 可用性的位置直接引用该类）
+    private var appleProviderStorage: AnyObject?
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -114,14 +115,17 @@ final class AIService: ObservableObject {
         }
     }
 
-    private func appleProviderValue() -> AppleIntelligenceProvider? {
+    private func appleProviderValue() -> (any TextAIProviding)? {
         #if canImport(FoundationModels)
-        if let appleProvider { return appleProvider }
-        let provider = AppleIntelligenceProvider()
-        appleProvider = provider
-        return provider
-        #else
-        return nil
+        if #available(iOS 26.0, *) {
+            if let provider = appleProviderStorage as? AppleIntelligenceProvider {
+                return provider
+            }
+            let provider = AppleIntelligenceProvider()
+            appleProviderStorage = provider
+            return provider
+        }
         #endif
+        return nil
     }
 }

@@ -12,15 +12,18 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      # 有 Xcode 26（iOS 26 SDK）时启用 Apple Foundation Models 分支；
-      # 没有时降级为旧 Xcode，代码中 #if canImport(FoundationModels) 会自动剔除该分支。
-      - name: Select Xcode 26 (if available)
+      # 优先使用 Xcode 27（确保 Foundation Models 分支被编译），
+      # 不存在时回退 Xcode 26；更低版本则代码中 #if canImport(FoundationModels) 自动剔除该分支。
+      - name: Select latest Xcode (27 preferred, 26 fallback)
         run: |
-          XCODE26_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | head -n 1 || true)
-          if [ -n "$XCODE26_PATH" ]; then
-            sudo xcode-select -s "$XCODE26_PATH"
+          XCODE_PATH=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | head -n 1 || true)
+          if [ -z "$XCODE_PATH" ]; then
+            XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | head -n 1 || true)
+          fi
+          if [ -n "$XCODE_PATH" ]; then
+            sudo xcode-select -s "$XCODE_PATH"
           fi
           xcodebuild -version
 

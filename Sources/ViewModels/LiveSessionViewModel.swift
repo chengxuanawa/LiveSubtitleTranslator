@@ -33,11 +33,11 @@ final class LiveSessionViewModel: ObservableObject {
     private var targetIdentifier = ""
 
     init(
-        speechRecognizer: any SpeechRecognizing = SpeechRecognizerService(),
-        translationService: any TextTranslating = TranslationService(),
-        settings: SettingsStore = SettingsStore(),
-        transcriptStore: TranscriptStore = TranscriptStore(),
-        liveActivity: LiveActivityService = LiveActivityService()
+        speechRecognizer: any SpeechRecognizing,
+        translationService: any TextTranslating,
+        settings: SettingsStore,
+        transcriptStore: TranscriptStore,
+        liveActivity: LiveActivityService
     ) {
         self.speechRecognizer = speechRecognizer
         self.translationService = translationService
