@@ -17,7 +17,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
             to: "请总结以下字幕会话：\n\n\(text)",
             options: GenerationOptions(temperature: 0.2)
         )
-        return cleaned(response.content)
+        return AITextSanitizer.plainText(response.content)
     }
 
     func polish(_ text: String) async throws -> String? {
@@ -25,7 +25,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
             to: "请把下面的翻译改写得更自然、更口语化。保持原意，只输出改写后的译文：\n\n\(text)",
             options: GenerationOptions(temperature: 0.4)
         )
-        return cleaned(response.content)
+        return AITextSanitizer.plainText(response.content)
     }
 
     // MARK: - 私有
@@ -35,8 +35,9 @@ final class AppleIntelligenceProvider: TextAIProviding {
         let session = LanguageModelSession(
             instructions: Instructions {
                 "你是一名专业的会议与对话摘要助手。"
-                "用户会提供一段带原文和译文的字幕记录。"
-                "输出简洁的中文摘要：先用一句话总括，再列 3-5 个要点。"
+                "用户会提供一段带原文和译文的字幕记录，你的任务是输出简洁的中文摘要。"
+                "格式要求：第一句为总括；随后用「1. 2. 3.」编号列出 3-5 个要点，每行一个要点；"
+                "只输出纯文本，禁止使用 Markdown 或任何格式符号（如 *、**、#、- 等）；"
                 "不要编造字幕中没有的内容。"
             }
         )
@@ -50,17 +51,12 @@ final class AppleIntelligenceProvider: TextAIProviding {
         let session = LanguageModelSession(
             instructions: Instructions {
                 "你是翻译校对助手，负责把直译的句子改写得更自然、口语化，符合目标语言习惯。"
-                "保持原意不变，只改进表达。输出时只给改写后的文本。"
+                "保持原意不变，只改进表达。只输出改写后的纯文本：不要引号、不要星号或任何格式符号。"
             }
         )
         session.prewarm()
         polishSession = session
         return session
-    }
-
-    private func cleaned(_ content: String) -> String? {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

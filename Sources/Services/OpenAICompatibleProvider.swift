@@ -17,13 +17,15 @@ final class OpenAICompatibleProvider: TextAIProviding {
     }
 
     func summarize(_ text: String) async throws -> String? {
-        let system = "你是一名专业的会议与对话摘要助手。用简洁的中文输出：先一句总括，再列 3-5 个要点。严格要求：不要编造原文中不存在的内容。"
-        return try await chat(system: system, user: text)
+        let system = "你是一名专业的会议与对话摘要助手。任务：输出简洁的中文摘要。格式：第一句为总括；随后用「1. 2. 3.」编号列出 3-5 个要点，每行一个。只输出纯文本，禁止 Markdown 或任何格式符号（*、**、#、- 等）。不要编造原文中不存在的内容。"
+        let result = try await chat(system: system, user: text)
+        return AITextSanitizer.plainText(result ?? "")
     }
 
     func polish(_ text: String) async throws -> String? {
-        let system = "你是翻译校对助手。把下面的直译改写得更自然、口语化，保持原意不变。只输出改写后的译文，不要任何解释或引号。"
-        return try await chat(system: system, user: text)
+        let system = "你是翻译校对助手。把直译改写得更自然、口语化，保持原意。只输出改写后的纯文本，不要解释、引号、星号或任何格式符号。"
+        let result = try await chat(system: system, user: text)
+        return AITextSanitizer.plainText(result ?? "")
     }
 
     // MARK: - 私有

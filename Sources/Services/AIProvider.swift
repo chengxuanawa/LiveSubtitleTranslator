@@ -27,3 +27,27 @@ protocol TextAIProviding: AnyObject {
     func summarize(_ text: String) async throws -> String?
     func polish(_ text: String) async throws -> String?
 }
+
+/// 清理模型输出中的 Markdown 格式符号，保证摘要 / 润色以纯文本展示
+enum AITextSanitizer {
+    static func plainText(_ content: String) -> String? {
+        var result: [String] = []
+        for rawLine in content.components(separatedBy: .newlines) {
+            var line = rawLine.trimmingCharacters(in: .whitespaces)
+            // 去除行首 Markdown 记号（*、-、#、>、• 等）
+            while let first = line.first, ["*", "-", "#", ">", "•", "·"].contains(first) {
+                line.removeFirst()
+                line = line.trimmingCharacters(in: .whitespaces)
+            }
+            line = line.replacingOccurrences(of: "**", with: "")
+            line = line.replacingOccurrences(of: "*", with: "")
+            line = line.replacingOccurrences(of: "`", with: "")
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty {
+                result.append(trimmed)
+            }
+        }
+        let joined = result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+}
