@@ -349,6 +349,9 @@ final class LiveSessionViewModel: ObservableObject {
         let segmentID = segment.id
         updateVisuals(original: text, translated: nil)
 
+        // 关闭实时翻译时只保留原文，不再请求译文
+        guard settings.realtimeTranslationEnabled else { return }
+
         // 异步翻译，完成后回填对应片段
         Task { [weak self] in
             guard let self else { return }

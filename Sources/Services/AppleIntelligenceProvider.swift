@@ -14,8 +14,8 @@ final class AppleIntelligenceProvider: TextAIProviding {
 
     func summarize(_ text: String) async throws -> String? {
         let response = try await summarizeSessionValue().respond(
-            to: "请总结以下字幕会话：\n\n\(text)",
-            options: GenerationOptions(temperature: 0.2)
+            to: "请只对以下字幕做压缩归纳，不要新增或改写内容：\n\n\(text)",
+            options: GenerationOptions(temperature: 0.1)
         )
         return AITextSanitizer.plainText(response.content)
     }
@@ -34,11 +34,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
         if let summarizeSession { return summarizeSession }
         let session = LanguageModelSession(
             instructions: Instructions {
-                "你是一名专业的会议与对话摘要助手。"
-                "用户会提供一段带原文和译文的字幕记录，你的任务是输出简洁的中文摘要。"
-                "格式要求：第一句为总括；随后用「1. 2. 3.」编号列出 3-5 个要点，每行一个要点；"
-                "只输出纯文本，禁止使用 Markdown 或任何格式符号（如 *、**、#、- 等）；"
-                "不要编造字幕中没有的内容。"
+                AISummaryPrompt.system
             }
         )
         session.prewarm()

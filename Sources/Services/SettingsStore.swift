@@ -16,6 +16,8 @@ final class SettingsStore: ObservableObject {
     @AppStorage("visualModeRaw") private var visualModeRaw = VisualMode.auto.rawValue
     /// 画中画窗口形状
     @AppStorage("pipShapeRaw") private var pipShapeRaw = PiPShape.standard.rawValue
+    /// 是否开启实时翻译（录制中可通过主按钮左侧的玻璃按钮切换）
+    @AppStorage("realtimeTranslationEnabled") var realtimeTranslationEnabled = true
 
     // AI 底层配置保留（仅用于摘要数据兼容）
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue

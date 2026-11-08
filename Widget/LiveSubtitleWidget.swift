@@ -23,16 +23,14 @@ struct LiveCaptionLiveActivity: Widget {
                         .foregroundStyle(.yellow)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(context.state.originalText)
-                            .font(.caption)
-                            .lineLimit(2)
-                        if let translated = context.state.translatedText {
-                            Text(translated)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
+                    // 灵动岛不展示说话内容，只显示状态与语言对
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("正在聆听…")
+                            .font(.caption.weight(.medium))
+                        Text(context.state.languagePair)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -40,9 +38,10 @@ struct LiveCaptionLiveActivity: Widget {
                 Image(systemName: "captions.bubble")
                     .foregroundStyle(.yellow)
             } compactTrailing: {
-                Text(context.state.translatedText ?? context.state.originalText)
-                    .font(.caption2)
-                    .lineLimit(1)
+                // 不展示字幕文本，仅保留聆听中的波形标识
+                Image(systemName: "waveform")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
                     .frame(maxWidth: 80, alignment: .trailing)
             } minimal: {
                 Image(systemName: "captions.bubble")

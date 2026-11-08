@@ -225,11 +225,11 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
             return nil
         }
 
-        // 只开 volatile 结果：兼顾实时预览与准确率（fastResults 会牺牲精度）
+        // volatile + fast：优先保证边说边出字，避免结果攒到一段结束才刷新
         let transcriber = SpeechTranscriber(
             locale: supportedLocale,
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
+            reportingOptions: [.volatileResults, .fastResults],
             attributeOptions: [.audioTimeRange]
         )
         do {
@@ -249,6 +249,10 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
         analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        // 预加载识别资源，降低第一句字幕的延迟
+        if let analyzerFormat {
+            try? await analyzer.prepareToAnalyze(in: analyzerFormat)
+        }
         self.analyzer = analyzer
         return (analyzer, transcriber)
     }
@@ -264,29 +268,35 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
     private func startResultsLoop(with transcriber: SpeechTranscriber) {
         resultsTask?.cancel()
-        resultsTask = Task { [weak self] in
+        // 结果消费放在主线程之外：iOS 26 的 SpeechTranscriber 若在主 actor 上迭代，
+        // 结果可能被攒到整段处理完才一起刷新（表现为必须重新进入 App 才看到字幕）。
+        resultsTask = Task.detached { [weak self] in
             do {
                 for try await result in transcriber.results {
-                    guard let self, self.isRunning else { return }
-                    self.handleResult(result)
+                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { continue }
+                    let isFinal = result.isFinal
+                    let audioStart = CMTimeGetSeconds(result.range.start)
+                    await MainActor.run {
+                        guard let self, self.isRunning else { return }
+                        self.handleResult(text: text, isFinal: isFinal, audioStart: audioStart)
+                    }
                 }
             } catch {
-                guard let self, self.isRunning else { return }
-                self.onError?("识别中断：\(error.localizedDescription)")
-                self.tearDown()
+                await MainActor.run {
+                    guard let self, self.isRunning else { return }
+                    self.onError?("识别中断：\(error.localizedDescription)")
+                    self.tearDown()
+                }
             }
         }
     }
 
     /// 结果处理：volatile 用于实时预览，final 落库为一条字幕
-    private func handleResult(_ result: SpeechTranscriber.Result) {
-        let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-
-        if result.isFinal {
+    private func handleResult(text: String, isFinal: Bool, audioStart: TimeInterval) {
+        if isFinal {
             latestPartialText = ""
-            let start = CMTimeGetSeconds(result.range.start)
-            submitSegment(text, audioStart: start)
+            submitSegment(text, audioStart: audioStart)
         } else {
             latestPartialText = text
             onPartialUpdate?(text)

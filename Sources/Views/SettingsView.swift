@@ -11,23 +11,21 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Form {
-                    recognitionSection
-                    audioSourceSection
-                    liveActivitySection
-                    aiSection
-                    recordSection
-                }
-                .softTopEdgeEffect()
-
+            Form {
+                recognitionSection
+                audioSourceSection
+                liveActivitySection
+                aiSection
+                recordSection
+                // 版本号随页面滚动，放在内容末尾，不单独占一个列表行
                 Text("版本 \(appVersion)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(Color(.systemGroupedBackground))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
+            .softTopEdgeEffect()
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {

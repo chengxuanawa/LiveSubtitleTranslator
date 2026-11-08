@@ -17,8 +17,7 @@ final class OpenAICompatibleProvider: TextAIProviding {
     }
 
     func summarize(_ text: String) async throws -> String? {
-        let system = "你是一名专业的会议与对话摘要助手。任务：输出简洁的中文摘要。格式：第一句为总括；随后用「1. 2. 3.」编号列出 3-5 个要点，每行一个。只输出纯文本，禁止 Markdown 或任何格式符号（*、**、#、- 等）。不要编造原文中不存在的内容。"
-        let result = try await chat(system: system, user: text)
+        let result = try await chat(system: AISummaryPrompt.system, user: text, temperature: 0.1)
         return AITextSanitizer.plainText(result ?? "")
     }
 
@@ -30,7 +29,7 @@ final class OpenAICompatibleProvider: TextAIProviding {
 
     // MARK: - 私有
 
-    private func chat(system: String, user: String) async throws -> String? {
+    private func chat(system: String, user: String, temperature: Double = 0.3) async throws -> String? {
         guard let url = URL(string: config.endpoint) else { return nil }
 
         struct ChatMessage: Encodable {
@@ -65,7 +64,7 @@ final class OpenAICompatibleProvider: TextAIProviding {
                 ChatMessage(role: "system", content: system),
                 ChatMessage(role: "user", content: user),
             ],
-            temperature: 0.3
+            temperature: temperature
         )
         request.httpBody = try JSONEncoder().encode(body)
 

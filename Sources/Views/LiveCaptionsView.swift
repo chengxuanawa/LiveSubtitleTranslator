@@ -10,35 +10,42 @@ struct LiveCaptionsView: View {
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                captionStage
-                segmentList
-            }
-            .overlay(alignment: .bottomTrailing) {
-                floatingControls
-            }
-            .safeAreaPadding(.bottom, 140)
-            .frame(maxWidth: 900)
-            .frame(maxWidth: .infinity)
-            .navigationTitle("实时字幕")
-            .navigationBarTitleDisplayMode(.inline)
-            .softTopEdgeEffect()
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    clearButton
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    languageControls
-                }
-            }
-            .translationTask(source: sourceLanguage, target: targetLanguage) { session in
-                viewModel.attachTranslationSession(session)
-            }
-            .onAppear {
-                viewModel.prepareSystemAudioServer()
-            }
+        VStack(spacing: 0) {
+            header
+            captionStage
+            segmentList
         }
+        .safeAreaPadding(.bottom, 96)
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .background(Color(.systemBackground).ignoresSafeArea())
+        .overlay(alignment: .bottomTrailing) {
+            floatingControls
+        }
+        .translationTask(source: sourceLanguage, target: targetLanguage) { session in
+            viewModel.attachTranslationSession(session)
+        }
+        .onAppear {
+            viewModel.prepareSystemAudioServer()
+        }
+    }
+
+    // MARK: - 顶部标题栏
+
+    /// 左侧清空 + 标题，右侧语言胶囊（参考设计稿）
+    private var header: some View {
+        HStack(spacing: 12) {
+            clearButton
+            Text("实时字幕")
+                .font(.title3.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 8)
+            languageControls
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
     }
 
     // MARK: - 翻译会话（由 SwiftUI translationTask 注入）
@@ -51,7 +58,7 @@ struct LiveCaptionsView: View {
         Locale.Language(identifier: settings.targetLanguageIdentifier)
     }
 
-    // MARK: - 顶部大字幕（柔和材质，无分隔线）
+    // MARK: - 顶部大字幕
 
     private var captionStage: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -68,10 +75,9 @@ struct LiveCaptionsView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
         .animation(.easeInOut(duration: 0.3), value: viewModel.segments.count)
         .animation(.easeInOut(duration: 0.3), value: viewModel.segments.last?.translatedText)
     }
@@ -87,7 +93,9 @@ struct LiveCaptionsView: View {
     }
 
     private var displayTranslation: String? {
-        guard viewModel.livePartialText.isEmpty, let last = viewModel.segments.last else { return nil }
+        guard settings.realtimeTranslationEnabled,
+              viewModel.livePartialText.isEmpty,
+              let last = viewModel.segments.last else { return nil }
         return last.displayTranslatedText
     }
 
@@ -114,7 +122,7 @@ struct LiveCaptionsView: View {
         }
     }
 
-    // MARK: - 悬浮控制栏（按钮悬浮在材质底栏之上）
+    // MARK: - 悬浮控制（右下角液态玻璃）
 
     private var floatingControls: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -127,59 +135,63 @@ struct LiveCaptionsView: View {
                     .onTapGesture { viewModel.dismissError() }
             }
 
-            HStack(spacing: 16) {
-                audioSourceButton
-
-                if viewModel.audioSourceMode == .microphone {
-                    recordButton
-                } else {
-                    BroadcastPickerView(preferredExtension: broadcastExtensionID)
-                        .frame(width: 48, height: 48)
-                        .accessibilityLabel("开始系统广播")
-                    if viewModel.state == .listening {
-                        stopButton
-                    }
-                }
-
+            HStack(spacing: 10) {
                 if viewModel.state == .listening {
-                    liveActivityButton
-                    pipButton
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .glassEffect(.regular, in: Capsule())
+                    HStack(spacing: 8) {
+                        liveActivityButton
+                        pipButton
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .glassEffect(.regular, in: Capsule())
 
-            Text(statusText)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
-                .padding(.horizontal, 4)
+                    translateToggle
+                        .transition(
+                            .move(edge: .trailing).combined(with: .opacity)
+                        )
+                }
+
+                primaryControl
+            }
+            .animation(.spring(response: 0.34, dampingFraction: 0.78), value: viewModel.state)
         }
-        .padding(.trailing, 16)
-        .padding(.bottom, 12)
+        .padding(.trailing, 20)
+        .padding(.bottom, 16)
     }
 
-    /// 音频来源切换：麦克风 ↔ 系统共享音频
-    private var audioSourceButton: some View {
+    /// 实时翻译开关：录音开始后从主按钮左侧弹出
+    private var translateToggle: some View {
         Button {
-            if viewModel.state == .listening {
-                viewModel.stop()
-            }
-            settings.audioSourceMode = settings.audioSourceMode == .microphone ? .systemAudio : .microphone
+            settings.realtimeTranslationEnabled.toggle()
             settings.objectWillChange.send()
-            if settings.audioSourceMode == .systemAudio {
-                viewModel.prepareSystemAudioServer()
-            }
         } label: {
-            Image(systemName: settings.audioSourceMode == .microphone ? "mic" : "speaker.wave.2.fill")
+            Image(systemName: "translate")
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(settings.realtimeTranslationEnabled ? Color.accentColor : .secondary)
                 .frame(width: 44, height: 44)
-                .background(Color(.secondarySystemBackground), in: Circle())
+                .animation(.easeInOut(duration: 0.2), value: settings.realtimeTranslationEnabled)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(settings.audioSourceMode == .microphone ? "切换到系统共享音频" : "切换到麦克风")
+        .glassEffect(.regular.interactive(), in: Circle())
+        .accessibilityLabel(settings.realtimeTranslationEnabled ? "关闭实时翻译" : "开启实时翻译")
+    }
+
+    /// 主按钮：麦克风开始/停止；系统共享音频时为广播按钮
+    @ViewBuilder
+    private var primaryControl: some View {
+        switch viewModel.audioSourceMode {
+        case .microphone:
+            recordButton
+        case .systemAudio:
+            if viewModel.state == .listening {
+                stopButton
+            } else {
+                BroadcastPickerView(preferredExtension: broadcastExtensionID)
+                    .frame(width: 60, height: 60)
+                    .glassEffect(.regular, in: Circle())
+                    .accessibilityLabel("开始系统广播")
+            }
+        }
     }
 
     private var recordButton: some View {
@@ -189,14 +201,16 @@ struct LiveCaptionsView: View {
             Image(systemName: viewModel.state == .listening ? "stop.fill" : "mic.fill")
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 68, height: 68)
-                .background(
-                    (viewModel.state == .listening ? Color.red : Color.accentColor),
-                    in: Circle()
-                )
+                .frame(width: 62, height: 62)
                 .symbolEffect(.variableColor.iterative, isActive: viewModel.state == .listening)
         }
         .buttonStyle(.plain)
+        .glassEffect(
+            .regular
+                .tint(viewModel.state == .listening ? Color.red : Color.accentColor)
+                .interactive(),
+            in: Circle()
+        )
         .accessibilityLabel(viewModel.state == .listening ? "停止识别" : "开始识别")
     }
 
@@ -205,12 +219,12 @@ struct LiveCaptionsView: View {
             viewModel.stop()
         } label: {
             Image(systemName: "stop.fill")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 52, height: 52)
-                .background(Color.red, in: Circle())
+                .frame(width: 62, height: 62)
         }
         .buttonStyle(.plain)
+        .glassEffect(.regular.tint(Color.red).interactive(), in: Circle())
         .accessibilityLabel("停止识别")
     }
 
@@ -219,10 +233,9 @@ struct LiveCaptionsView: View {
             viewModel.toggleLiveActivity()
         } label: {
             Image(systemName: viewModel.isLiveActivityActive ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(viewModel.isLiveActivityActive ? Color.accentColor : .secondary)
-                .frame(width: 52, height: 52)
-                .background(Color(.secondarySystemBackground), in: Circle())
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕")
@@ -233,40 +246,12 @@ struct LiveCaptionsView: View {
             viewModel.togglePictureInPicture()
         } label: {
             Image(systemName: viewModel.isPictureInPictureActive ? "pip.exit" : "pip.enter")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(viewModel.isPictureInPictureActive ? Color.accentColor : .secondary)
-                .frame(width: 52, height: 52)
-                .background(Color(.secondarySystemBackground), in: Circle())
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕")
-    }
-
-    private var statusText: String {
-        if viewModel.audioSourceMode == .systemAudio {
-            switch viewModel.state {
-            case .idle, .ended:
-                return "点击广播按钮，在系统弹窗中选择「译幕」后开始共享；停止共享请在控制中心或状态栏点击红点"
-            case .listening:
-                if viewModel.isWaitingForBroadcast {
-                    return "正在等待系统广播连接…请在系统弹窗中选择本 App"
-                }
-                return viewModel.isLiveActivityActive
-                    ? "正在转写系统音频 · 设备端识别 · 灵动岛字幕已开启"
-                    : "正在转写系统音频 · 设备端识别"
-            }
-        }
-
-        switch viewModel.state {
-        case .listening:
-            return viewModel.isLiveActivityActive
-                ? "正在聆听 · 设备端识别 · 灵动岛字幕已开启"
-                : "正在聆听 · 设备端识别"
-        case .idle:
-            return "点击开始，麦克风将实时生成字幕"
-        case .ended:
-            return "已停止 · 记录已保存"
-        }
     }
 
     // MARK: - 工具栏
@@ -276,19 +261,23 @@ struct LiveCaptionsView: View {
             viewModel.clearSegments()
         } label: {
             Image(systemName: "trash")
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 42, height: 42)
         }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
         .disabled(viewModel.segments.isEmpty && viewModel.livePartialText.isEmpty)
         .accessibilityLabel("清空字幕")
     }
 
-    /// 语言切换：源语言、目标语言各一个独立模块，中间箭头可点击对换
+    /// 语言切换：整块液态玻璃胶囊，中间箭头可点击对换
     private var languageControls: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 8) {
             sourceLanguageMenu
             Image(systemName: "arrow.left.arrow.right")
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
+                .frame(width: 26, height: 30)
                 .contentShape(Rectangle())
                 .onTapGesture { swapLanguages() }
                 .accessibilityLabel("对换语言")
@@ -296,6 +285,9 @@ struct LiveCaptionsView: View {
                 .accessibilityAction { swapLanguages() }
             targetLanguageMenu
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .glassEffect(.regular, in: Capsule())
     }
 
     /// 对换识别语言与翻译语言
@@ -332,10 +324,10 @@ struct LiveCaptionsView: View {
 
     private func languageChip(_ name: String) -> some View {
         Text(shortName(name))
-            .font(.subheadline.weight(.medium))
-            .padding(.horizontal, 10)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.primary)
             .padding(.vertical, 6)
-            .background(.quaternary, in: Capsule())
+            .contentShape(Rectangle())
     }
 
     private func shortName(_ name: String) -> String {

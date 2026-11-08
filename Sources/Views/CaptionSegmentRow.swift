@@ -22,11 +22,6 @@ struct CaptionSegmentRow: View {
                         .font(.subheadline)
                         .foregroundStyle(segment.polishedText == nil ? .secondary : .primary)
                 }
-            } else {
-                // 翻译进行中
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
