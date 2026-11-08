@@ -32,11 +32,42 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
           xcodegen generate
 
-      - name: Build
+      - name: Build (Simulator, 编译验证)
         run: |
           xcodebuild build \
             -project LiveSubtitleTranslator.xcodeproj \
             -scheme LiveSubtitleTranslator \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath build/DerivedData-Sim \
             CODE_SIGNING_ALLOWED=NO
+
+      # 真机 SDK Release 构建（无签名），用于产出 IPA 制品
+      - name: Build (Device, unsigned)
+        run: |
+          xcodebuild build \
+            -project LiveSubtitleTranslator.xcodeproj \
+            -scheme LiveSubtitleTranslator \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath build/DerivedData-Device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH=$(find build/DerivedData-Device/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          echo "App: $APP_PATH"
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          cd build
+          zip -qry LiveSubtitleTranslator-unsigned.ipa Payload
+          ls -lh LiveSubtitleTranslator-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveSubtitleTranslator-unsigned-ipa
+          path: build/LiveSubtitleTranslator-unsigned.ipa
+          if-no-files-found: error
