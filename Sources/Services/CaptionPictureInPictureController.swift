@@ -21,14 +21,13 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         super.init()
         displayLayer.videoGravity = .resizeAspect
         displayLayer.frame = CGRect(x: 0, y: 0, width: 2, height: 2)
-        if let source = AVPictureInPictureController.ContentSource(
+        let source = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: displayLayer,
             playbackDelegate: self
-        ) {
-            let controller = AVPictureInPictureController(contentSource: source)
-            controller.delegate = self
-            pipController = controller
-        }
+        )
+        let controller = AVPictureInPictureController(contentSource: source)
+        controller.delegate = self
+        pipController = controller
     }
 
     static var isSupported: Bool {
