@@ -7,7 +7,7 @@ struct BroadcastPickerView: UIViewRepresentable {
     var showsMicrophoneButton = false
 
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
-        let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
+        let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
         picker.preferredExtension = preferredExtension
         picker.showsMicrophoneButton = showsMicrophoneButton
         return picker

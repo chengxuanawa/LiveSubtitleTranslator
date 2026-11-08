@@ -38,11 +38,8 @@ struct LiveCaptionLiveActivity: Widget {
                 Image(systemName: "captions.bubble")
                     .foregroundStyle(.yellow)
             } compactTrailing: {
-                // 不展示字幕文本，仅保留聆听中的波形标识
-                Image(systemName: "waveform")
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
-                    .frame(maxWidth: 80, alignment: .trailing)
+                // 右侧留空，紧凑态只显示左侧字幕图标
+                EmptyView()
             } minimal: {
                 Image(systemName: "captions.bubble")
                     .foregroundStyle(.yellow)

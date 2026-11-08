@@ -41,12 +41,12 @@ struct SettingsView: View {
 
     private var recognitionSection: some View {
         Section {
-            LabeledContent("识别引擎", value: "Apple SpeechAnalyzer")
-            LabeledContent("运行方式", value: "本机识别（音频不上传）")
+            LabeledContent("识别引擎", value: "Apple SpeechAnalyzer（设备端）")
+            LabeledContent("运行方式", value: "仅本机（不可切换）")
         } header: {
             Text("识别")
         } footer: {
-            Text("iOS 26 起使用苹果新一代本机语音模型，自动断句、标点与上下文纠错；首次使用某语言时会自动下载对应模型。")
+            Text("iOS 26 的 SpeechAnalyzer 只提供设备端识别，苹果已不提供第三方云端语音识别路径；云端模型仅用于「AI 功能」中的自定义 AI API。")
         }
     }
 
@@ -137,7 +137,7 @@ struct SettingsView: View {
         return "此设备不可用苹果智能（\(reason)）。可配置自定义 AI API，或关闭 AI 功能仅使用基础字幕与翻译。API Key 保存在系统钥匙串中。"
     }
 
-    // MARK: - 字幕记录
+    // MARK: - 历史
 
     private var recordSection: some View {
         Section {
@@ -150,9 +150,9 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("字幕记录")
+            Text("历史")
         } footer: {
-            Text("「位置」显示录制地点（需定位权限），无法定位时显示首句字幕；「AI 标题」使用已有摘要首行，无摘要时显示时间。")
+            Text("「位置」显示录制地点（需定位权限），无法定位时显示首句字幕；「AI 标题」会在录制结束后自动生成摘要并显示首行，AI 引擎不可用时显示时间。")
         }
     }
 

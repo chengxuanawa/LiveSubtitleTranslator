@@ -50,9 +50,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     @discardableResult
     func start() -> Bool {
         guard Self.isSupported, let pipController else { return false }
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
-        try? session.setActive(true)
+        // 不再把音频会话切到 .playback：那会抢占麦克风，导致录音中开画中画时识别掉线
         attachToWindow()
         displayLayer.flush()
         render(original: lastContent?.original ?? "SubLingo", translated: lastContent?.translated)

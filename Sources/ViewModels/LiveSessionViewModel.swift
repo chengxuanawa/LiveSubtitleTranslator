@@ -35,6 +35,7 @@ final class LiveSessionViewModel: ObservableObject {
     private let transcriptStore: TranscriptStore
     private let liveActivity: LiveActivityService
     private let systemAudioServer: SystemAudioStreamServer
+    private let aiService: AIService
     private let locationService = LocationService()
     private let keepAlive = SilentAudioKeepAlive()
     private let pipController = CaptionPictureInPictureController()
@@ -49,6 +50,8 @@ final class LiveSessionViewModel: ObservableObject {
     private var lastVisualUpdate = Date.distantPast
     /// 本次录制的地点名（定位完成后写入，用于「位置」标题）
     private var sessionLocationName: String?
+    /// 本次录制自动生成的 AI 摘要（用于「AI 标题」）
+    private var sessionSummary: String?
     private var locationTask: Task<Void, Never>?
 
     init(
@@ -57,7 +60,8 @@ final class LiveSessionViewModel: ObservableObject {
         settings: SettingsStore,
         transcriptStore: TranscriptStore,
         liveActivity: LiveActivityService,
-        systemAudioServer: SystemAudioStreamServer
+        systemAudioServer: SystemAudioStreamServer,
+        aiService: AIService
     ) {
         self.speechRecognizer = speechRecognizer
         self.translationService = translationService
@@ -65,6 +69,7 @@ final class LiveSessionViewModel: ObservableObject {
         self.transcriptStore = transcriptStore
         self.liveActivity = liveActivity
         self.systemAudioServer = systemAudioServer
+        self.aiService = aiService
         pipController.onStateChange = { [weak self] active in
             self?.isPictureInPictureActive = active
         }
@@ -230,6 +235,7 @@ final class LiveSessionViewModel: ObservableObject {
         sessionEnd = Date()
         state = .ended
         saveCurrentSession()
+        generateAutoTitleIfNeeded()
     }
 
     func clearSegments() {
@@ -266,6 +272,7 @@ final class LiveSessionViewModel: ObservableObject {
         sourceIdentifier = settings.sourceLanguageIdentifier
         targetIdentifier = settings.targetLanguageIdentifier
         sessionLocationName = nil
+        sessionSummary = nil
         startLocationCapture()
     }
 
@@ -385,8 +392,38 @@ final class LiveSessionViewModel: ObservableObject {
             sourceLanguageIdentifier: sourceIdentifier,
             targetLanguageIdentifier: targetIdentifier,
             segments: segments,
+            summary: sessionSummary,
             locationName: sessionLocationName
         )
         transcriptStore.save(session)
+    }
+
+    /// 「AI 标题」模式下，录制结束后自动生成摘要，标题取摘要首行
+    private func generateAutoTitleIfNeeded() {
+        guard settings.recordTitleStyle == .aiTitle,
+              sessionSummary == nil,
+              !segments.isEmpty,
+              aiService.isAvailable else { return }
+
+        let targetSessionID = sessionID
+        let snapshot = TranscriptSession(
+            id: targetSessionID,
+            startedAt: sessionStart,
+            endedAt: sessionEnd ?? Date(),
+            sourceLanguageIdentifier: sourceIdentifier,
+            targetLanguageIdentifier: targetIdentifier,
+            segments: segments,
+            locationName: sessionLocationName
+        )
+
+        Task { [weak self] in
+            guard let self,
+                  let summary = await self.aiService.summarize(session: snapshot) else { return }
+            guard self.sessionID == targetSessionID else { return }
+            self.sessionSummary = summary
+            if self.state == .ended {
+                self.saveCurrentSession()
+            }
+        }
     }
 }

@@ -10,15 +10,16 @@ struct LiveSubtitleApp: App {
     init() {
         let settings = SettingsStore()
         let transcriptStore = TranscriptStore()
+        let aiService = AIService(settings: settings)
         let viewModel = LiveSessionViewModel(
             speechRecognizer: SpeechRecognizerService(),
             translationService: TranslationService(),
             settings: settings,
             transcriptStore: transcriptStore,
             liveActivity: LiveActivityService(),
-            systemAudioServer: SystemAudioStreamServer()
+            systemAudioServer: SystemAudioStreamServer(),
+            aiService: aiService
         )
-        let aiService = AIService(settings: settings)
         _settings = StateObject(wrappedValue: settings)
         _transcriptStore = StateObject(wrappedValue: transcriptStore)
         _viewModel = StateObject(wrappedValue: viewModel)

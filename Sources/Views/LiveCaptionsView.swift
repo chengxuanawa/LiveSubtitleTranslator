@@ -142,7 +142,6 @@ struct LiveCaptionsView: View {
                         pipButton
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
                     .glassEffect(.regular, in: Capsule())
 
                     translateToggle
@@ -171,9 +170,9 @@ struct LiveCaptionsView: View {
             switchAudioSource()
         } label: {
             Image(systemName: settings.audioSourceMode == .microphone ? "circle.fill" : "mic.fill")
-                .font(.system(size: settings.audioSourceMode == .microphone ? 16 : 18, weight: .bold))
+                .font(.system(size: settings.audioSourceMode == .microphone ? 20 : 22, weight: .bold))
                 .foregroundStyle(settings.audioSourceMode == .microphone ? Color.red : Color.accentColor)
-                .frame(width: 44, height: 44)
+                .frame(width: 56, height: 56)
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
@@ -202,9 +201,9 @@ struct LiveCaptionsView: View {
             settings.objectWillChange.send()
         } label: {
             Image(systemName: "translate")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(settings.realtimeTranslationEnabled ? Color.accentColor : .secondary)
-                .frame(width: 44, height: 44)
+                .frame(width: 56, height: 56)
                 .symbolEffect(.bounce, value: settings.realtimeTranslationEnabled)
                 .animation(.easeInOut(duration: 0.2), value: settings.realtimeTranslationEnabled)
         }
@@ -223,12 +222,24 @@ struct LiveCaptionsView: View {
             if viewModel.state == .listening {
                 stopButton
             } else {
-                BroadcastPickerView(preferredExtension: broadcastExtensionID)
-                    .frame(width: 60, height: 60)
-                    .glassEffect(.regular, in: Circle())
-                    .accessibilityLabel("开始系统广播")
+                systemAudioButton
             }
         }
+    }
+
+    /// 系统共享音频主按钮：自定义蓝色玻璃外观，底层用系统广播选择器接收点击
+    private var systemAudioButton: some View {
+        ZStack {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+            BroadcastPickerView(preferredExtension: broadcastExtensionID)
+                .frame(width: 56, height: 56)
+                .opacity(0.02)
+        }
+        .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Circle())
+        .accessibilityLabel("开始系统广播")
     }
 
     private var recordButton: some View {
@@ -236,9 +247,9 @@ struct LiveCaptionsView: View {
             viewModel.toggle()
         } label: {
             Image(systemName: viewModel.state == .listening ? "stop.fill" : "mic.fill")
-                .font(.system(size: 26, weight: .semibold))
+                .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 62, height: 62)
+                .frame(width: 56, height: 56)
                 .contentTransition(.symbolEffect(.replace))
                 .symbolEffect(.variableColor.iterative, isActive: viewModel.state == .listening)
         }
@@ -257,9 +268,9 @@ struct LiveCaptionsView: View {
             viewModel.stop()
         } label: {
             Image(systemName: "stop.fill")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 62, height: 62)
+                .frame(width: 56, height: 56)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(Color.red).interactive(), in: Circle())
@@ -271,9 +282,9 @@ struct LiveCaptionsView: View {
             viewModel.toggleLiveActivity()
         } label: {
             Image(systemName: viewModel.isLiveActivityActive ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(viewModel.isLiveActivityActive ? Color.accentColor : .secondary)
-                .frame(width: 44, height: 44)
+                .frame(width: 56, height: 56)
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
@@ -285,9 +296,9 @@ struct LiveCaptionsView: View {
             viewModel.togglePictureInPicture()
         } label: {
             Image(systemName: viewModel.isPictureInPictureActive ? "pip.exit" : "pip.enter")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(viewModel.isPictureInPictureActive ? Color.accentColor : .secondary)
-                .frame(width: 44, height: 44)
+                .frame(width: 56, height: 56)
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
@@ -310,10 +321,11 @@ struct LiveCaptionsView: View {
         .accessibilityLabel("清空字幕")
     }
 
-    /// 语言切换：源语言、目标语言各一个独立模块，中间箭头透明可点击对换
+    /// 语言切换：源语言、目标语言各一块液态玻璃胶囊，中间箭头保持透明可点击对换
     private var languageControls: some View {
         HStack(spacing: 2) {
             sourceLanguageMenu
+                .glassEffect(.regular.interactive(), in: Capsule())
             Image(systemName: "arrow.left.arrow.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -324,6 +336,7 @@ struct LiveCaptionsView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { swapLanguages() }
             targetLanguageMenu
+                .glassEffect(.regular.interactive(), in: Capsule())
         }
     }
 

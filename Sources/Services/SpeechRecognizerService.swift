@@ -88,10 +88,14 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
             return
         }
 
-        // 音频会话：录音模式
+        // 音频会话：录音 + 与其他 App 音频混音，避免播放音频时麦克风会话被抢占
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .measurement)
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .measurement,
+                options: [.mixWithOthers, .defaultToSpeaker]
+            )
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             onError?("音频会话启动失败：\(error.localizedDescription)")
