@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build (iOS Simulator)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 有 Xcode 26（iOS 26 SDK）时启用 Apple Foundation Models 分支；
+      # 没有时降级为旧 Xcode，代码中 #if canImport(FoundationModels) 会自动剔除该分支。
+      - name: Select Xcode 26 (if available)
+        run: |
+          XCODE26_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | head -n 1 || true)
+          if [ -n "$XCODE26_PATH" ]; then
+            sudo xcode-select -s "$XCODE26_PATH"
+          fi
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project LiveSubtitleTranslator.xcodeproj \
+            -scheme LiveSubtitleTranslator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO
