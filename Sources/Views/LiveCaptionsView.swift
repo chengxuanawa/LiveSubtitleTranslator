@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 实时字幕主界面：字幕列表 + 实时预览 + 音频来源控制（麦克风 / 系统共享音频）
+/// 实时字幕主界面：顶部大字幕 + 分段记录 + 悬浮控制栏（麦克风 / 系统共享音频）
 struct LiveCaptionsView: View {
 
     @EnvironmentObject private var viewModel: LiveSessionViewModel
@@ -12,15 +12,18 @@ struct LiveCaptionsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 captionStage
-                Divider()
                 segmentList
-                Divider()
-                controlBar
             }
+            .overlay(alignment: .bottom) {
+                floatingControls
+            }
+            .safeAreaPadding(.bottom, 120)
             .frame(maxWidth: 900)
             .frame(maxWidth: .infinity)
             .navigationTitle("实时字幕")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     clearButton
@@ -48,20 +51,7 @@ struct LiveCaptionsView: View {
         Locale.Language(identifier: settings.targetLanguageIdentifier)
     }
 
-    // MARK: - 字幕列表（按时间从上到下逐行排列，不自动滚动）
-
-    private var segmentList: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(viewModel.segments) { segment in
-                    CaptionSegmentRow(segment: segment)
-                }
-            }
-            .padding(.vertical, 12)
-        }
-    }
-
-    // MARK: - 顶部大字幕
+    // MARK: - 顶部大字幕（柔和材质，无分隔线）
 
     private var captionStage: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -81,7 +71,7 @@ struct LiveCaptionsView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
-        .background(.regularMaterial)
+        .background(.ultraThinMaterial)
         .animation(.easeInOut(duration: 0.3), value: viewModel.segments.count)
         .animation(.easeInOut(duration: 0.3), value: viewModel.segments.last?.translatedText)
     }
@@ -101,9 +91,22 @@ struct LiveCaptionsView: View {
         return last.displayTranslatedText
     }
 
-    // MARK: - 控制区
+    // MARK: - 分段记录
 
-    private var controlBar: some View {
+    private var segmentList: some View {
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                ForEach(viewModel.segments) { segment in
+                    CaptionSegmentRow(segment: segment)
+                }
+            }
+            .padding(.vertical, 12)
+        }
+    }
+
+    // MARK: - 悬浮控制栏（按钮悬浮在材质底栏之上）
+
+    private var floatingControls: some View {
         VStack(spacing: 8) {
             if let message = viewModel.errorMessage {
                 Text(message)
@@ -114,18 +117,20 @@ struct LiveCaptionsView: View {
                     .onTapGesture { viewModel.dismissError() }
             }
 
-            HStack(spacing: 20) {
+            HStack(spacing: 16) {
+                audioSourceButton
+
                 if viewModel.audioSourceMode == .microphone {
                     recordButton
                 } else {
-                    // 系统共享音频：广播按钮常驻，点击直接弹出系统共享界面
                     BroadcastPickerView(preferredExtension: broadcastExtensionID)
-                        .frame(width: 56, height: 56)
+                        .frame(width: 48, height: 48)
                         .accessibilityLabel("开始系统广播")
                     if viewModel.state == .listening {
                         stopButton
                     }
                 }
+
                 if viewModel.state == .listening {
                     liveActivityButton
                     pipButton
@@ -138,8 +143,38 @@ struct LiveCaptionsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+
+    /// 音频来源切换：麦克风 ↔ 系统共享音频
+    private var audioSourceButton: some View {
+        Button {
+            if viewModel.state == .listening {
+                viewModel.stop()
+            }
+            settings.audioSourceMode = settings.audioSourceMode == .microphone ? .systemAudio : .microphone
+            settings.objectWillChange.send()
+            if settings.audioSourceMode == .systemAudio {
+                viewModel.prepareSystemAudioServer()
+            }
+        } label: {
+            Image(systemName: settings.audioSourceMode == .microphone ? "mic" : "speaker.wave.2.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .background(Color(.secondarySystemBackground), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(settings.audioSourceMode == .microphone ? "切换到系统共享音频" : "切换到麦克风")
     }
 
     private var recordButton: some View {
@@ -245,15 +280,6 @@ struct LiveCaptionsView: View {
 
     private var settingsMenu: some View {
         Menu {
-            Picker("音频来源", selection: Binding(
-                get: { settings.audioSourceMode.rawValue },
-                set: { settings.audioSourceMode = AudioSourceMode(rawValue: $0) ?? .microphone }
-            )) {
-                ForEach(AudioSourceMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode.rawValue)
-                }
-            }
-            Divider()
             Picker("识别语言", selection: $settings.sourceLanguageIdentifier) {
                 ForEach(LanguageOption.all) { option in
                     Text(option.displayName).tag(option.identifier)

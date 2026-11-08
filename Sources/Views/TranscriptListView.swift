@@ -4,6 +4,7 @@ import SwiftUI
 struct TranscriptListView: View {
 
     @EnvironmentObject private var store: TranscriptStore
+    @EnvironmentObject private var settings: SettingsStore
 
     var body: some View {
         NavigationStack {
@@ -29,6 +30,8 @@ struct TranscriptListView: View {
                 }
             }
             .navigationTitle("字幕记录")
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .navigationDestination(for: TranscriptSession.self) { session in
                 TranscriptDetailView(session: session)
             }
@@ -37,13 +40,32 @@ struct TranscriptListView: View {
 
     private func sessionRow(_ session: TranscriptSession) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(session.startedAt.formatted(date: .abbreviated, time: .shortened))
+            Text(titleText(for: session))
                 .font(.headline)
             Text(detailText(for: session))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+
+    private func titleText(for session: TranscriptSession) -> String {
+        switch settings.recordTitleStyle {
+        case .time:
+            return session.startedAt.formatted(date: .abbreviated, time: .shortened)
+        case .snippet:
+            if let first = session.segments.first?.originalText, !first.isEmpty {
+                return String(first.prefix(24))
+            }
+            return "未命名记录"
+        case .aiTitle:
+            if let firstLine = session.summary?
+                .components(separatedBy: .newlines)
+                .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                return String(firstLine.prefix(30))
+            }
+            return session.startedAt.formatted(date: .abbreviated, time: .shortened)
+        }
     }
 
     private func detailText(for session: TranscriptSession) -> String {
@@ -53,30 +75,16 @@ struct TranscriptListView: View {
     }
 }
 
-/// 单次会话详情（AI 摘要 + 译文润色 + 分享导出）
+/// 单次会话详情（分段查看 + 分享导出）
 private struct TranscriptDetailView: View {
 
-    @EnvironmentObject private var store: TranscriptStore
-    @EnvironmentObject private var aiService: AIService
-
-    @State private var session: TranscriptSession
-    @State private var isSummarizing = false
-
-    init(session: TranscriptSession) {
-        _session = State(initialValue: session)
-    }
+    let session: TranscriptSession
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                if let summary = session.summary {
-                    summaryCard(summary)
-                }
                 ForEach(session.segments) { segment in
-                    CaptionSegmentRow(
-                        segment: segment,
-                        onPolishRequest: aiService.isAvailable ? { polish(segment) } : nil
-                    )
+                    CaptionSegmentRow(segment: segment)
                 }
             }
             .padding(.vertical, 12)
@@ -84,68 +92,14 @@ private struct TranscriptDetailView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                summarizeButton
+            ToolbarItem(placement: .topBarTrailing) {
                 ShareLink(item: session.exportText()) {
                     Image(systemName: "square.and.arrow.up")
                 }
             }
-        }
-    }
-
-    // MARK: - AI 摘要
-
-    private var summarizeButton: some View {
-        Button {
-            summarize()
-        } label: {
-            if isSummarizing {
-                ProgressView()
-            } else {
-                Image(systemName: "sparkles")
-            }
-        }
-        .disabled(!aiService.isAvailable || isSummarizing)
-        .accessibilityLabel("生成 AI 摘要")
-    }
-
-    private func summarize() {
-        guard !isSummarizing else { return }
-        isSummarizing = true
-        Task {
-            let summary = await aiService.summarize(session: session)
-            if let summary {
-                session.summary = summary
-                store.save(session)
-            }
-            isSummarizing = false
-        }
-    }
-
-    private func summaryCard(_ summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("AI 摘要", systemImage: "sparkles")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
-            Text(summary)
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-    }
-
-    // MARK: - 译文润色
-
-    private func polish(_ segment: CaptionSegment) {
-        Task {
-            guard let polished = await aiService.polish(segment: segment) else { return }
-            guard let index = session.segments.firstIndex(where: { $0.id == segment.id }) else { return }
-            session.segments[index].polishedText = polished
-            store.save(session)
         }
     }
 }

@@ -11,8 +11,10 @@ final class SettingsStore: ObservableObject {
     @AppStorage("autoStartLiveActivity") var autoStartLiveActivity = false
     /// 音频来源：麦克风 / 系统共享音频
     @AppStorage("audioSourceModeRaw") private var audioSourceModeRaw = AudioSourceMode.microphone.rawValue
+    /// 字幕记录列表标题样式
+    @AppStorage("recordTitleStyleRaw") private var recordTitleStyleRaw = RecordTitleStyle.time.rawValue
 
-    // AI 引擎
+    // AI 底层配置保留（UI 入口已移除，仅用于兼容历史摘要数据）
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue
     @AppStorage("aiAPIEndpoint") var aiAPIEndpoint = ""
     @AppStorage("aiAPIModel") var aiAPIModel = ""
@@ -26,6 +28,11 @@ final class SettingsStore: ObservableObject {
     var audioSourceMode: AudioSourceMode {
         get { AudioSourceMode(rawValue: audioSourceModeRaw) ?? .microphone }
         set { audioSourceModeRaw = newValue.rawValue }
+    }
+
+    var recordTitleStyle: RecordTitleStyle {
+        get { RecordTitleStyle(rawValue: recordTitleStyleRaw) ?? .time }
+        set { recordTitleStyleRaw = newValue.rawValue }
     }
 
     var isAPIConfigured: Bool {
