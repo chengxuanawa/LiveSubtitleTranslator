@@ -14,6 +14,8 @@ final class SettingsStore: ObservableObject {
     @AppStorage("recordTitleStyleRaw") private var recordTitleStyleRaw = RecordTitleStyle.time.rawValue
     /// 字幕浮窗显示方式
     @AppStorage("visualModeRaw") private var visualModeRaw = VisualMode.auto.rawValue
+    /// 画中画窗口形状
+    @AppStorage("pipShapeRaw") private var pipShapeRaw = PiPShape.standard.rawValue
 
     // AI 底层配置保留（仅用于摘要数据兼容）
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue
@@ -39,6 +41,11 @@ final class SettingsStore: ObservableObject {
     var visualMode: VisualMode {
         get { VisualMode(rawValue: visualModeRaw) ?? .auto }
         set { visualModeRaw = newValue.rawValue }
+    }
+
+    var pipShape: PiPShape {
+        get { PiPShape(rawValue: pipShapeRaw) ?? .standard }
+        set { pipShapeRaw = newValue.rawValue }
     }
 
     var isAPIConfigured: Bool {

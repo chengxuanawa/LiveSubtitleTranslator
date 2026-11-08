@@ -1,5 +1,6 @@
 import AVFoundation
 import AVKit
+import QuartzCore
 import UIKit
 
 /// 字幕画中画：把最新字幕渲染成视频帧，通过 AVSampleBufferDisplayLayer + AVPictureInPictureController
@@ -12,10 +13,20 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     /// 进入/退出画中画时回调
     var onStateChange: ((Bool) -> Void)?
 
+    /// 画中画窗口形状（默认 / 长条）
+    var shape: PiPShape = .standard {
+        didSet {
+            guard shape != oldValue, isActive else { return }
+            render(original: lastContent?.original ?? "SubLingo", translated: lastContent?.translated)
+        }
+    }
+
     private let displayLayer = AVSampleBufferDisplayLayer()
     private var pipController: AVPictureInPictureController?
     private var hostView: UIView?
     private var lastContent: (original: String, translated: String?)?
+    /// 相对时间基准，用于给样本缓冲打时间戳
+    private let playbackAnchor = CACurrentMediaTime()
 
     override init() {
         super.init()
@@ -27,6 +38,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         )
         let controller = AVPictureInPictureController(contentSource: source)
         controller.delegate = self
+        controller.requiresLinearPlayback = true
         pipController = controller
     }
 
@@ -64,7 +76,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     // MARK: - 渲染
 
     private func render(original: String, translated: String?) {
-        let size = CGSize(width: 640, height: 360)
+        let size = shape.renderSize
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { context in
             UIColor.black.setFill()
@@ -74,24 +86,39 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             paragraph.alignment = .left
             paragraph.lineBreakMode = .byTruncatingTail
 
+            let padding = size.height * 0.065
+            let contentRect = CGRect(
+                x: padding,
+                y: padding,
+                width: size.width - padding * 2,
+                height: size.height - padding * 2
+            )
+            let originalHeight = contentRect.height * 0.52
+            let gap: CGFloat = 8
+
             let originalAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 30, weight: .semibold),
+                .font: UIFont.systemFont(ofSize: size.height * 0.085, weight: .semibold),
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph,
             ]
             (original as NSString).draw(
-                in: CGRect(x: 24, y: 24, width: size.width - 48, height: 160),
+                in: CGRect(x: contentRect.minX, y: contentRect.minY, width: contentRect.width, height: originalHeight),
                 withAttributes: originalAttributes
             )
 
             if let translated {
                 let translatedAttributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 24, weight: .regular),
+                    .font: UIFont.systemFont(ofSize: size.height * 0.068, weight: .regular),
                     .foregroundColor: UIColor.systemYellow,
                     .paragraphStyle: paragraph,
                 ]
                 (translated as NSString).draw(
-                    in: CGRect(x: 24, y: 196, width: size.width - 48, height: 140),
+                    in: CGRect(
+                        x: contentRect.minX,
+                        y: contentRect.minY + originalHeight + gap,
+                        width: contentRect.width,
+                        height: contentRect.height - originalHeight - gap
+                    ),
                     withAttributes: translatedAttributes
                 )
             }
@@ -148,7 +175,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
 
         var timing = CMSampleTimingInfo(
             duration: .invalid,
-            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+            presentationTimeStamp: CMTime(seconds: CACurrentMediaTime() - playbackAnchor, preferredTimescale: 600),
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -184,7 +211,8 @@ extension CaptionPictureInPictureController: AVPictureInPictureSampleBufferPlayb
     func pictureInPictureController(_ controller: AVPictureInPictureController, setPlaying playing: Bool) {}
 
     func pictureInPictureControllerTimeRangeForPlayback(_ controller: AVPictureInPictureController) -> CMTimeRange {
-        CMTimeRange(start: .zero, duration: .positiveInfinity)
+        // 返回有限时长而不是 positiveInfinity，避免系统在画中画窗口标注「直播」
+        CMTimeRange(start: .zero, duration: CMTime(seconds: 86_400, preferredTimescale: 600))
     }
 
     func pictureInPictureControllerIsPlaybackPaused(_ controller: AVPictureInPictureController) -> Bool {

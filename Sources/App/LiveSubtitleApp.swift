@@ -32,6 +32,20 @@ struct LiveSubtitleApp: App {
                 .environmentObject(settings)
                 .environmentObject(transcriptStore)
                 .environmentObject(aiService)
+                .sheet(isPresented: onboardingBinding) {
+                    OnboardingView()
+                        .environmentObject(settings)
+                        .environmentObject(aiService)
+                        .interactiveDismissDisabled()
+                }
         }
+    }
+
+    /// 首次启动展示 AI 引擎选择引导
+    private var onboardingBinding: Binding<Bool> {
+        Binding(
+            get: { !settings.hasCompletedSetup },
+            set: { settings.hasCompletedSetup = !$0 }
+        )
     }
 }

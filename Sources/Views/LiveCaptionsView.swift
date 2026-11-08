@@ -5,6 +5,7 @@ struct LiveCaptionsView: View {
 
     @EnvironmentObject private var viewModel: LiveSessionViewModel
     @EnvironmentObject private var settings: SettingsStore
+    @EnvironmentObject private var aiService: AIService
 
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
 
@@ -14,10 +15,10 @@ struct LiveCaptionsView: View {
                 captionStage
                 segmentList
             }
-            .overlay(alignment: .bottom) {
+            .overlay(alignment: .bottomTrailing) {
                 floatingControls
             }
-            .safeAreaPadding(.bottom, 120)
+            .safeAreaPadding(.bottom, 140)
             .frame(maxWidth: 900)
             .frame(maxWidth: .infinity)
             .navigationTitle("实时字幕")
@@ -96,23 +97,33 @@ struct LiveCaptionsView: View {
         ScrollView {
             LazyVStack(spacing: 10) {
                 ForEach(viewModel.segments) { segment in
-                    CaptionSegmentRow(segment: segment)
+                    CaptionSegmentRow(segment: segment) {
+                        polish(segment)
+                    }
                 }
             }
             .padding(.vertical, 12)
         }
     }
 
+    /// 长按字幕行触发 AI 润色
+    private func polish(_ segment: CaptionSegment) {
+        Task {
+            guard let polished = await aiService.polish(segment: segment) else { return }
+            viewModel.applyPolishedText(polished, to: segment.id)
+        }
+    }
+
     // MARK: - 悬浮控制栏（按钮悬浮在材质底栏之上）
 
     private var floatingControls: some View {
-        VStack(spacing: 8) {
+        VStack(alignment: .trailing, spacing: 8) {
             if let message = viewModel.errorMessage {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                    .multilineTextAlignment(.trailing)
+                    .padding(.horizontal, 4)
                     .onTapGesture { viewModel.dismissError() }
             }
 
@@ -135,23 +146,18 @@ struct LiveCaptionsView: View {
                     pipButton
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: Capsule())
 
             Text(statusText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+                .multilineTextAlignment(.trailing)
+                .padding(.horizontal, 4)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
+        .padding(.trailing, 16)
+        .padding(.bottom, 12)
     }
 
     /// 音频来源切换：麦克风 ↔ 系统共享音频
@@ -275,15 +281,29 @@ struct LiveCaptionsView: View {
         .accessibilityLabel("清空字幕")
     }
 
-    /// 语言切换：源语言、目标语言各一个独立模块
+    /// 语言切换：源语言、目标语言各一个独立模块，中间箭头可点击对换
     private var languageControls: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             sourceLanguageMenu
-            Image(systemName: "arrow.right")
+            Image(systemName: "arrow.left.arrow.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .onTapGesture { swapLanguages() }
+                .accessibilityLabel("对换语言")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { swapLanguages() }
             targetLanguageMenu
         }
+    }
+
+    /// 对换识别语言与翻译语言
+    private func swapLanguages() {
+        let source = settings.sourceLanguageIdentifier
+        settings.sourceLanguageIdentifier = settings.targetLanguageIdentifier
+        settings.targetLanguageIdentifier = source
+        settings.objectWillChange.send()
     }
 
     private var sourceLanguageMenu: some View {

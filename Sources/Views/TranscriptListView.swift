@@ -29,7 +29,8 @@ struct TranscriptListView: View {
                     }
                 }
             }
-            .navigationTitle("字幕记录")
+            .navigationTitle("历史")
+            .navigationBarTitleDisplayMode(.inline)
             .softTopEdgeEffect()
             .navigationDestination(for: TranscriptSession.self) { session in
                 TranscriptDetailView(session: session)
@@ -84,6 +85,8 @@ private struct TranscriptDetailView: View {
 
     @EnvironmentObject private var store: TranscriptStore
     @EnvironmentObject private var aiService: AIService
+    /// 订阅设置变化，AI 引擎切换后摘要按钮状态即时刷新
+    @EnvironmentObject private var settings: SettingsStore
 
     @State private var session: TranscriptSession
     @State private var isSummarizing = false
@@ -99,7 +102,9 @@ private struct TranscriptDetailView: View {
                     summaryCard(summary)
                 }
                 ForEach(session.segments) { segment in
-                    CaptionSegmentRow(segment: segment)
+                    CaptionSegmentRow(segment: segment) {
+                        polish(segment)
+                    }
                 }
             }
             .padding(.vertical, 12)
@@ -144,6 +149,16 @@ private struct TranscriptDetailView: View {
                 store.save(session)
             }
             isSummarizing = false
+        }
+    }
+
+    /// 长按字幕行触发 AI 润色，并把结果写回当前会话
+    private func polish(_ segment: CaptionSegment) {
+        guard let index = session.segments.firstIndex(where: { $0.id == segment.id }) else { return }
+        Task {
+            guard let polished = await aiService.polish(segment: segment) else { return }
+            session.segments[index].polishedText = polished
+            store.save(session)
         }
     }
 

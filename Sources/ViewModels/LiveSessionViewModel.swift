@@ -151,6 +151,7 @@ final class LiveSessionViewModel: ObservableObject {
             pipController.stop()
             return
         }
+        pipController.shape = settings.pipShape
         _ = pipController.start()
         let preview = livePartialText.isEmpty ? "正在聆听…" : livePartialText
         pipController.update(original: preview, translated: nil)
@@ -237,6 +238,15 @@ final class LiveSessionViewModel: ObservableObject {
         sessionStart = Date()
     }
 
+    /// AI 润色结果回填到对应字幕片段
+    func applyPolishedText(_ text: String, to segmentID: UUID) {
+        guard let index = segments.firstIndex(where: { $0.id == segmentID }) else { return }
+        segments[index].polishedText = text
+        if state == .ended {
+            saveCurrentSession()
+        }
+    }
+
     func dismissError() {
         errorMessage = nil
     }
@@ -297,6 +307,7 @@ final class LiveSessionViewModel: ObservableObject {
             }
         case .pictureInPicture:
             guard CaptionPictureInPictureController.isSupported else { return }
+            pipController.shape = settings.pipShape
             _ = pipController.start()
             pipController.update(original: "正在聆听…", translated: nil)
         case .auto:

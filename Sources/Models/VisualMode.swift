@@ -13,9 +13,9 @@ enum VisualMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .auto: return "自动（按机型）"
-        case .liveActivity: return "灵动岛 / 锁屏"
-        case .pictureInPicture: return "画中画小窗口"
+        case .auto: return "自动"
+        case .liveActivity: return "灵动岛"
+        case .pictureInPicture: return "画中画"
         }
     }
 }
