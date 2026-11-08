@@ -20,9 +20,22 @@ protocol SpeechRecognizing: AnyObject {
 
     func start() async
     func stop()
+
+    /// 以外部音频流启动识别（系统共享音频，不启动麦克风引擎）
+    func startExternalAudio() async
+    /// 向识别请求喂入外部音频缓冲
+    func appendExternalBuffer(_ buffer: AVAudioPCMBuffer)
+}
+
+/// 默认实现：非 Speech 引擎（如 WhisperKit）可按需覆盖
+extension SpeechRecognizing {
+    func startExternalAudio() async {}
+    func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {}
 }
 
 /// 基于系统 Speech 框架 + AVAudioEngine 的实时语音识别实现。
+/// 启动流程按“权限 → 音频会话 → 格式校验 → 安装 Tap → 启动引擎 → 识别任务”的顺序执行，
+/// 并对麦克风格式、音频会话异常做防御，避免 installTap 使用非法格式导致崩溃。
 @MainActor
 final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
@@ -44,6 +57,7 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var sessionStartDate = Date()
+    private var isTapInstalled = false
 
     // MARK: - 生命周期
 
@@ -63,37 +77,65 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
             return
         }
 
+        // 1. 音频会话：录音模式（不附加 duckOthers，避免与 .record 组合产生会话错误）
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.record, mode: .measurement)
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            onError?("音频会话启动失败：\(error.localizedDescription)")
+            return
+        }
+
+        // 2. 校验麦克风输入格式（采样率或通道为 0 时 installTap 会崩溃）
+        let inputNode = audioEngine.inputNode
+        var format = inputNode.outputFormat(forBus: 0)
+        if format.sampleRate <= 0 || format.channelCount == 0 {
+            format = inputNode.inputFormat(forBus: 0)
+        }
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            onError?("未检测到可用的麦克风输入，请检查麦克风或蓝牙耳机连接后重试。")
+            tearDown()
+            return
+        }
+
+        // 3. 识别请求
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = requiresOnDeviceRecognition
         request.addsPunctuation = true
         request.taskHint = .dictation
+        if requiresOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
         self.recognizer = recognizer
         self.recognitionRequest = request
 
+        // 4. 安装音频 Tap
+        if isTapInstalled {
+            inputNode.removeTap(onBus: 0)
+            isTapInstalled = false
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            self?.recognitionRequest?.append(buffer)
+        }
+        isTapInstalled = true
+
+        // 5. 启动引擎
+        audioEngine.prepare()
         do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-
-            let inputNode = audioEngine.inputNode
-            let recordingFormat = inputNode.outputFormat(forBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-                self?.recognitionRequest?.append(buffer)
-            }
-
-            audioEngine.prepare()
             try audioEngine.start()
-            sessionStartDate = Date()
-
-            recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                Task { @MainActor [weak self] in
-                    self?.handleRecognitionResult(result, error: error)
-                }
-            }
         } catch {
-            onError?("音频启动失败：\(error.localizedDescription)")
+            onError?("音频引擎启动失败：\(error.localizedDescription)")
             tearDown()
+            return
+        }
+
+        // 6. 开始识别任务
+        sessionStartDate = Date()
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor [weak self] in
+                self?.handleRecognitionResult(result, error: error)
+            }
         }
     }
 
@@ -103,12 +145,56 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         tearDown()
     }
 
+    // MARK: - 系统共享音频
+
+    func startExternalAudio() async {
+        tearDown()
+
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+            onError?("当前设备不支持所选识别语言，请更换语言后重试。")
+            return
+        }
+        if requiresOnDeviceRecognition && !recognizer.supportsOnDeviceRecognition {
+            onError?("当前语言或设备不支持离线识别，可在设置中关闭“仅在本机识别”。")
+            return
+        }
+        guard await requestAuthorization() else {
+            onError?("未获得语音识别权限，请到系统设置中授权。")
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.addsPunctuation = true
+        request.taskHint = .dictation
+        if requiresOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+        self.recognizer = recognizer
+        self.recognitionRequest = request
+        sessionStartDate = Date()
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor [weak self] in
+                self?.handleRecognitionResult(result, error: error)
+            }
+        }
+    }
+
+    func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {
+        recognitionRequest?.append(buffer)
+    }
+
     private func tearDown() {
         recognitionTask?.cancel()
         recognitionTask = nil
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
         recognitionRequest = nil
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        if isTapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            isTapInstalled = false
+        }
         recognizer = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }

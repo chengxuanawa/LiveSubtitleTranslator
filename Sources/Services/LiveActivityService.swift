@@ -1,26 +1,12 @@
 import ActivityKit
 import Foundation
 
-/// 灵动岛 / 锁屏实时字幕（基于 ActivityKit Live Activity）
-struct LiveCaptionAttributes: ActivityAttributes {
-    public struct ContentState: Codable, Hashable {
-        /// 最新一句原文
-        var originalText: String
-        /// 最新一句译文（尚未翻译完成时为 nil）
-        var translatedText: String?
-        /// 语言对说明，如 "zh-Hans → en-US"
-        var languagePair: String
-        /// 会话开始时间
-        var startedAt: Date
-    }
-
-    var sessionID: String
-}
-
 /// 管理实时字幕 Live Activity 的启动 / 更新 / 结束。
 /// 注意：受系统更新预算限制，按“完整句子”粒度更新（而非逐字部分结果）。
 @MainActor
-final class LiveActivityService {
+final class LiveActivityService: ObservableObject {
+
+    @Published private(set) var isActive = false
 
     private var activity: Activity<LiveCaptionAttributes>?
     private var languagePair = ""
@@ -30,15 +16,20 @@ final class LiveActivityService {
         ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
-    func start(languagePair: String) {
-        guard Self.isSupported, activity == nil else { return }
+    /// 启动灵动岛字幕；返回是否成功
+    @discardableResult
+    func start(languagePair: String) -> Bool {
+        guard Self.isSupported else { return false }
+        if activity != nil {
+            isActive = true
+            return true
+        }
         self.languagePair = languagePair
         let attributes = LiveCaptionAttributes(sessionID: UUID().uuidString)
         let state = LiveCaptionAttributes.ContentState(
             originalText: "正在聆听…",
             translatedText: nil,
-            languagePair: languagePair,
-            startedAt: .now
+            languagePair: languagePair
         )
         do {
             activity = try Activity.request(
@@ -46,11 +37,15 @@ final class LiveActivityService {
                 content: ActivityContent(state: state, staleDate: nil),
                 pushType: nil
             )
+            isActive = true
         } catch {
+            activity = nil
+            isActive = false
             #if DEBUG
             print("[LiveActivity] 启动失败：\(error.localizedDescription)")
             #endif
         }
+        return isActive
     }
 
     func update(originalText: String, translatedText: String?) {
@@ -58,8 +53,7 @@ final class LiveActivityService {
         let state = LiveCaptionAttributes.ContentState(
             originalText: originalText,
             translatedText: translatedText,
-            languagePair: languagePair,
-            startedAt: activity.content.state.startedAt
+            languagePair: languagePair
         )
         Task {
             await activity.update(ActivityContent(state: state, staleDate: nil))
@@ -67,9 +61,10 @@ final class LiveActivityService {
     }
 
     func end() {
-        guard let activity else { return }
         let current = activity
-        self.activity = nil
+        activity = nil
+        isActive = false
+        guard let current else { return }
         Task {
             await current.end(nil, dismissalPolicy: .immediate)
         }

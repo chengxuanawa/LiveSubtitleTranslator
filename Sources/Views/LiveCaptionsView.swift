@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// 实时字幕主界面：字幕列表 + 实时预览 + 录音控制
+/// 实时字幕主界面：字幕列表 + 实时预览 + 音频来源控制（麦克风 / 系统共享音频）
 struct LiveCaptionsView: View {
 
     @EnvironmentObject private var viewModel: LiveSessionViewModel
     @EnvironmentObject private var settings: SettingsStore
 
     private let bottomAnchorID = "bottomAnchor"
+    private let broadcastExtensionID = "com.example.livesubtitletranslator.broadcast"
 
     var body: some View {
         NavigationStack {
@@ -20,6 +21,8 @@ struct LiveCaptionsView: View {
                 Divider()
                 controlBar
             }
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
             .navigationTitle("实时字幕")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -27,7 +30,7 @@ struct LiveCaptionsView: View {
                     clearButton
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    languageMenu
+                    settingsMenu
                 }
             }
             .alert(
@@ -43,6 +46,9 @@ struct LiveCaptionsView: View {
             }
             .translationTask(source: sourceLanguage, target: targetLanguage) { session in
                 viewModel.attachTranslationSession(session)
+            }
+            .onAppear {
+                viewModel.prepareSystemAudioServer()
             }
         }
     }
@@ -67,7 +73,7 @@ struct LiveCaptionsView: View {
                         ContentUnavailableView(
                             "点击下方按钮开始",
                             systemImage: "captions.bubble",
-                            description: Text("本机识别语音并实时生成双语字幕")
+                            description: Text(emptyStateDescription)
                         )
                         .padding(.top, 100)
                     } else {
@@ -88,6 +94,12 @@ struct LiveCaptionsView: View {
                 scrollToBottom(proxy)
             }
         }
+    }
+
+    private var emptyStateDescription: String {
+        viewModel.audioSourceMode == .microphone
+            ? "本机识别语音并实时生成双语字幕"
+            : "先点击下方广播按钮，在系统弹窗中选择本 App，再播放需要字幕的音频"
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -113,36 +125,100 @@ struct LiveCaptionsView: View {
     // MARK: - 控制区
 
     private var controlBar: some View {
-        VStack(spacing: 8) {
-            Button {
-                viewModel.toggle()
-            } label: {
-                Image(systemName: viewModel.state == .listening ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 68, height: 68)
-                    .background(
-                        (viewModel.state == .listening ? Color.red : Color.accentColor),
-                        in: Circle()
-                    )
-                    .symbolEffect(.variableColor.iterative, isActive: viewModel.state == .listening)
+        VStack(spacing: 10) {
+            HStack(spacing: 20) {
+                if viewModel.audioSourceMode == .microphone {
+                    recordButton
+                } else {
+                    BroadcastPickerView(preferredExtension: broadcastExtensionID)
+                        .frame(width: 48, height: 48)
+                        .accessibilityLabel("开始系统广播")
+                    if viewModel.state == .listening {
+                        stopButton
+                    }
+                }
+                if viewModel.state == .listening {
+                    liveActivityButton
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(viewModel.state == .listening ? "停止识别" : "开始识别")
-
             Text(statusText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
     }
 
+    private var recordButton: some View {
+        Button {
+            viewModel.toggle()
+        } label: {
+            Image(systemName: viewModel.state == .listening ? "stop.fill" : "mic.fill")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 68, height: 68)
+                .background(
+                    (viewModel.state == .listening ? Color.red : Color.accentColor),
+                    in: Circle()
+                )
+                .symbolEffect(.variableColor.iterative, isActive: viewModel.state == .listening)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.state == .listening ? "停止识别" : "开始识别")
+    }
+
+    private var stopButton: some View {
+        Button {
+            viewModel.stop()
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(Color.red, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("停止识别")
+    }
+
+    private var liveActivityButton: some View {
+        Button {
+            viewModel.toggleLiveActivity()
+        } label: {
+            Image(systemName: viewModel.isLiveActivityActive ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(viewModel.isLiveActivityActive ? Color.accentColor : .secondary)
+                .frame(width: 52, height: 52)
+                .background(Color(.secondarySystemBackground), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕")
+    }
+
     private var statusText: String {
+        if viewModel.audioSourceMode == .systemAudio {
+            switch viewModel.state {
+            case .idle, .ended:
+                return "点击广播按钮，在系统弹窗中选择「实时字幕翻译」后开始共享；"+ "停止共享请在控制中心或状态栏点击红点"
+            case .listening:
+                if viewModel.isWaitingForBroadcast {
+                    return "正在等待系统广播连接…请在系统弹窗中选择本 App"
+                }
+                let mode = settings.requiresOnDeviceRecognition ? "设备端识别" : "在线识别"
+                return viewModel.isLiveActivityActive
+                    ? "正在转写系统音频 · \(mode) · 灵动岛字幕已开启"
+                    : "正在转写系统音频 · \(mode)"
+            }
+        }
+
         switch viewModel.state {
         case .listening:
             let mode = settings.requiresOnDeviceRecognition ? "设备端识别" : "在线识别"
-            return settings.showInLiveActivity ? "正在聆听 · \(mode) · 灵动岛同步" : "正在聆听 · \(mode)"
+            return viewModel.isLiveActivityActive
+                ? "正在聆听 · \(mode) · 灵动岛字幕已开启"
+                : "正在聆听 · \(mode)"
         case .idle:
             return "点击开始，麦克风将实时生成字幕"
         case .ended:
@@ -162,8 +238,17 @@ struct LiveCaptionsView: View {
         .accessibilityLabel("清空字幕")
     }
 
-    private var languageMenu: some View {
+    private var settingsMenu: some View {
         Menu {
+            Picker("音频来源", selection: Binding(
+                get: { settings.audioSourceMode.rawValue },
+                set: { settings.audioSourceMode = AudioSourceMode(rawValue: $0) ?? .microphone }
+            )) {
+                ForEach(AudioSourceMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode.rawValue)
+                }
+            }
+            Divider()
             Picker("识别语言", selection: $settings.sourceLanguageIdentifier) {
                 ForEach(LanguageOption.all) { option in
                     Text(option.displayName).tag(option.identifier)
@@ -175,7 +260,7 @@ struct LiveCaptionsView: View {
                 }
             }
         } label: {
-            Text(pairLabel)
+            Text(settingsLabel)
                 .font(.subheadline.weight(.medium))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -183,7 +268,7 @@ struct LiveCaptionsView: View {
         }
     }
 
-    private var pairLabel: String {
+    private var settingsLabel: String {
         let source = LanguageOption.option(for: settings.sourceLanguageIdentifier).displayName
         let target = LanguageOption.option(for: settings.targetLanguageIdentifier).displayName
         return "\(shortName(source)) → \(shortName(target))"

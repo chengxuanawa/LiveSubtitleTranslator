@@ -15,7 +15,8 @@ struct LiveSubtitleApp: App {
             translationService: TranslationService(),
             settings: settings,
             transcriptStore: transcriptStore,
-            liveActivity: LiveActivityService()
+            liveActivity: LiveActivityService(),
+            systemAudioServer: SystemAudioStreamServer()
         )
         let aiService = AIService(settings: settings)
         _settings = StateObject(wrappedValue: settings)

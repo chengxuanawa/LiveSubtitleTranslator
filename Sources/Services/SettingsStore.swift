@@ -8,7 +8,10 @@ final class SettingsStore: ObservableObject {
     @AppStorage("targetLanguageIdentifier") var targetLanguageIdentifier = "en-US"
     @AppStorage("requiresOnDeviceRecognition") var requiresOnDeviceRecognition = true
     @AppStorage("autoScrollToLatest") var autoScrollToLatest = true
-    @AppStorage("showInLiveActivity") var showInLiveActivity = true
+    /// 录制开始时自动开启灵动岛字幕（默认关闭，由用户手动开启）
+    @AppStorage("autoStartLiveActivity") var autoStartLiveActivity = false
+    /// 音频来源：麦克风 / 系统共享音频
+    @AppStorage("audioSourceModeRaw") private var audioSourceModeRaw = AudioSourceMode.microphone.rawValue
 
     // AI 引擎
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue
@@ -19,6 +22,11 @@ final class SettingsStore: ObservableObject {
     var aiProviderMode: AIProviderMode {
         get { AIProviderMode(rawValue: aiProviderModeRaw) ?? .auto }
         set { aiProviderModeRaw = newValue.rawValue }
+    }
+
+    var audioSourceMode: AudioSourceMode {
+        get { AudioSourceMode(rawValue: audioSourceModeRaw) ?? .microphone }
+        set { audioSourceModeRaw = newValue.rawValue }
     }
 
     var isAPIConfigured: Bool {

@@ -15,6 +15,7 @@ struct SettingsView: View {
             Form {
                 languageSection
                 recognitionSection
+                audioSourceSection
                 liveActivitySection
                 aiSection
                 permissionSection
@@ -64,15 +65,34 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - 音频来源
+
+    private var audioSourceSection: some View {
+        Section {
+            Picker("音频来源", selection: Binding(
+                get: { settings.audioSourceMode.rawValue },
+                set: { settings.audioSourceMode = AudioSourceMode(rawValue: $0) ?? .microphone }
+            )) {
+                ForEach(AudioSourceMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode.rawValue)
+                }
+            }
+        } header: {
+            Text("音频来源")
+        } footer: {
+            Text("麦克风：直接收音并识别；系统共享音频：通过系统的屏幕录制广播捕获设备播放的声音（可转写其他 App 的视频 / 播客），需在系统弹窗中允许广播。切换在下次开始识别时生效。")
+        }
+    }
+
     // MARK: - 后台显示
 
     private var liveActivitySection: some View {
         Section {
-            Toggle("灵动岛 / 锁屏实时字幕", isOn: $settings.showInLiveActivity)
+            Toggle("录制开始时自动开启灵动岛字幕", isOn: $settings.autoStartLiveActivity)
         } header: {
-            Text("后台显示")
+            Text("灵动岛 / 锁屏字幕")
         } footer: {
-            Text("开启后，识别期间的最新字幕会按句同步显示在灵动岛与锁屏；App 进入后台时继续通过麦克风聆听。若未显示，请在系统设置中允许本 App 的“实时活动”。")
+            Text("默认关闭。录制中可随时点击主界面麦克风旁的按钮手动开启或关闭字幕投送。若未显示，请在系统设置中允许本 App 的“实时活动”。")
         }
     }
 
