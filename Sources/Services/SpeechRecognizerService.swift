@@ -34,8 +34,8 @@ extension SpeechRecognizing {
 }
 
 /// 基于系统 Speech 框架 + AVAudioEngine 的实时语音识别实现。
-/// 启动流程按“权限 → 音频会话 → 格式校验 → 安装 Tap → 启动引擎 → 识别任务”的顺序执行，
-/// 并对麦克风格式、音频会话异常做防御，避免 installTap 使用非法格式导致崩溃。
+/// 段落切分采用简易静音检测（VAD）：说话后静音约 1.1 秒即结束当前识别任务并落库，
+/// 因此“一句话说完就切段”，不依赖标点或固定字数。
 @MainActor
 final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
@@ -65,6 +65,17 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     private var pendingPartialText = ""
     private var lastSegmentEnd: TimeInterval = 0
 
+    // MARK: - 静音检测（VAD）
+
+    private var lastVoiceTime = Date()
+    private var silenceTriggered = false
+    private var hasSpeechInCurrentSegment = false
+
+    /// 简易能量阈值（float 采样，0-1）
+    private static let silenceThreshold: Float = 0.012
+    /// 连续静音超过该时长即视为一句结束
+    private static let silenceDuration: TimeInterval = 1.1
+
     // MARK: - 生命周期
 
     func start() async {
@@ -83,7 +94,7 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
             return
         }
 
-        // 1. 音频会话：录音模式（不附加 duckOthers，避免与 .record 组合产生会话错误）
+        // 1. 音频会话：录音模式
         do {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.record, mode: .measurement)
@@ -116,13 +127,17 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         self.recognizer = recognizer
         self.recognitionRequest = request
 
-        // 4. 安装音频 Tap
+        // 4. 安装音频 Tap（同时做能量检测用于自动断句）
         if isTapInstalled {
             inputNode.removeTap(onBus: 0)
             isTapInstalled = false
         }
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
+            let rms = SpeechRecognizerService.rms(of: buffer)
+            Task { @MainActor [weak self] in
+                self?.handleAudioLevel(rms: rms)
+            }
         }
         isTapInstalled = true
 
@@ -138,12 +153,8 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
         // 6. 开始识别任务
         sessionStartDate = Date()
+        resetSessionState()
         isRunning = true
-        consecutiveTaskErrors = 0
-        isFinalizing = false
-        finalizationDeadline = nil
-        pendingPartialText = ""
-        lastSegmentEnd = 0
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
@@ -194,12 +205,8 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         self.recognizer = recognizer
         self.recognitionRequest = request
         sessionStartDate = Date()
+        resetSessionState()
         isRunning = true
-        consecutiveTaskErrors = 0
-        isFinalizing = false
-        finalizationDeadline = nil
-        pendingPartialText = ""
-        lastSegmentEnd = 0
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
@@ -209,6 +216,7 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {
         recognitionRequest?.append(buffer)
+        handleAudioLevel(rms: Self.rms(of: buffer))
     }
 
     private func tearDown() {
@@ -239,6 +247,55 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         return await AVAudioApplication.requestRecordPermission()
     }
 
+    // MARK: - 静音检测与断句
+
+    private func handleAudioLevel(rms: Float) {
+        guard isRunning else { return }
+        let now = Date()
+        if rms > Self.silenceThreshold {
+            lastVoiceTime = now
+            silenceTriggered = false
+            hasSpeechInCurrentSegment = true
+        } else if hasSpeechInCurrentSegment,
+                  !silenceTriggered,
+                  now.timeIntervalSince(lastVoiceTime) > Self.silenceDuration {
+            silenceTriggered = true
+            requestFinalForSilence()
+        }
+    }
+
+    /// 静音达到阈值：主动结束当前识别任务，触发 final 后落库
+    private func requestFinalForSilence() {
+        guard isRunning, !isFinalizing else { return }
+        let text = pendingPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        isFinalizing = true
+        finalizationDeadline = Date().addingTimeInterval(2.0)
+        recognitionRequest?.endAudio()
+    }
+
+    private nonisolated static func rms(of buffer: AVAudioPCMBuffer) -> Float {
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return 0 }
+        if let floatData = buffer.floatChannelData?[0] {
+            var sum: Double = 0
+            for index in 0..<count {
+                let value = Double(floatData[index])
+                sum += value * value
+            }
+            return Float((sum / Double(count)).squareRoot())
+        }
+        if let int16Data = buffer.int16ChannelData?[0] {
+            var sum: Double = 0
+            for index in 0..<count {
+                let value = Double(int16Data[index]) / 32768.0
+                sum += value * value
+            }
+            return Float((sum / Double(count)).squareRoot())
+        }
+        return 0
+    }
+
     // MARK: - 识别回调
 
     private func handleRecognitionResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
@@ -253,7 +310,6 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         }
 
         if let error {
-            // 单句任务超时/结束是流式识别的正常现象，自动续接；连续失败才上报并停止
             consecutiveTaskErrors += 1
             if consecutiveTaskErrors <= 3 {
                 commitPendingPartial()
@@ -280,18 +336,17 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
             if !text.isEmpty {
                 submitSegment(text)
             }
-            // 关键：SFSpeech 单个任务在 isFinal 后即完成，必须续接新任务才能持续转写
+            // SFSpeech 单个任务在 isFinal 后即完成，续接新任务才能持续转写
             restartRecognition()
             return
         }
 
-        // 自动分段：句末标点或长句达到阈值时，请求当前任务收尾，等待 final 后落库
         let partial = transcription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingPartialText = partial
-        if shouldRequestFinal(for: partial) {
-            isFinalizing = true
-            finalizationDeadline = Date().addingTimeInterval(2.5)
-            recognitionRequest?.endAudio()
+
+        // 超长句子兜底切分（避免识别任务无限增长）
+        if !isFinalizing, partial.count >= 60 {
+            requestFinalForSilence()
         }
     }
 
@@ -311,17 +366,6 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         onFinalSegment?(text, start)
     }
 
-    /// 判断是否需要主动结束当前识别任务以切分段落
-    private func shouldRequestFinal(for text: String) -> Bool {
-        guard !text.isEmpty, !isFinalizing else { return false }
-        if text.count >= 40 { return true }
-        let terminators: [Character] = ["。", "！", "？", ".", "!", "?", "…"]
-        if let last = text.last, terminators.contains(last), text.count >= 6 {
-            return true
-        }
-        return false
-    }
-
     /// 保持麦克风 / 外部音频输入不变，仅更换识别请求与任务，实现连续识别
     private func restartRecognition() {
         guard isRunning, let recognizer else { return }
@@ -336,10 +380,26 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
             request.requiresOnDeviceRecognition = true
         }
         recognitionRequest = request
+        isFinalizing = false
+        finalizationDeadline = nil
+        silenceTriggered = false
+        hasSpeechInCurrentSegment = false
+        lastVoiceTime = Date()
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
             }
         }
+    }
+
+    private func resetSessionState() {
+        consecutiveTaskErrors = 0
+        isFinalizing = false
+        finalizationDeadline = nil
+        pendingPartialText = ""
+        lastSegmentEnd = 0
+        silenceTriggered = false
+        hasSpeechInCurrentSegment = false
+        lastVoiceTime = Date()
     }
 }

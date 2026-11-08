@@ -275,6 +275,8 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     private func handleFinalSegment(_ text: String, startTime: TimeInterval) {
+        // 一句结束：清空实时预览，顶部切换到该句的原文并等待译文回填
+        livePartialText = ""
         let segment = CaptionSegment(originalText: text, startTime: startTime)
         segments.append(segment)
         let segmentID = segment.id

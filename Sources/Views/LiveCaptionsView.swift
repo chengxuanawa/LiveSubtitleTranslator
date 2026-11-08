@@ -75,12 +75,15 @@ struct LiveCaptionsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(3)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
         .background(.regularMaterial)
+        .animation(.easeInOut(duration: 0.3), value: viewModel.segments.count)
+        .animation(.easeInOut(duration: 0.3), value: viewModel.segments.last?.translatedText)
     }
 
     private var displayOriginal: String {
@@ -90,9 +93,7 @@ struct LiveCaptionsView: View {
         if let last = viewModel.segments.last {
             return last.originalText
         }
-        return viewModel.audioSourceMode == .microphone
-            ? "点击下方按钮开始，实时字幕将显示在这里"
-            : "点击广播按钮开始，字幕将显示在这里"
+        return ""
     }
 
     private var displayTranslation: String? {
