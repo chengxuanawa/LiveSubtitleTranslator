@@ -17,10 +17,12 @@ targets:
   SubLingo:
     type: application
     platform: iOS
+    # 注意：不要使用 XcodeGen 的 info: 配置——它会在 generate 时重写手写 Info.plist，
+    # 导致权限描述 / NSExtension 等键丢失。这里只用 INFOPLIST_FILE 引用仓库中的手写文件。
     sources:
       - path: Sources
-    info:
-      path: Sources/Resources/Info.plist
+        excludes:
+          - "Resources/Info.plist"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo
@@ -38,9 +40,9 @@ targets:
     platform: iOS
     sources:
       - path: Widget
+        excludes:
+          - "Info.plist"
       - path: Sources/Shared/LiveCaptionAttributes.swift
-    info:
-      path: Widget/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo.widget
@@ -52,9 +54,9 @@ targets:
     platform: iOS
     sources:
       - path: Broadcast
+        excludes:
+          - "Info.plist"
       - path: Sources/Shared/AudioStreamProtocol.swift
-    info:
-      path: Broadcast/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo.broadcast
