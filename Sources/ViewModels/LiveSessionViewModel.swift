@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Translation
 
 /// 编排一次实时字幕会话：语音识别 → 追加片段 → 异步翻译回填 → 灵动岛同步 → 结束保存。
 @MainActor
@@ -111,6 +112,11 @@ final class LiveSessionViewModel: ObservableObject {
 
     func dismissError() {
         errorMessage = nil
+    }
+
+    /// 接入 SwiftUI translationTask 提供的系统翻译会话（iOS 18+ 兼容路径）
+    func attachTranslationSession(_ session: TranslationSession) {
+        translationService.attach(session: session)
     }
 
     // MARK: - 私有

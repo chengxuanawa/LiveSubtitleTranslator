@@ -4,15 +4,19 @@ import Translation
 /// 文本翻译能力抽象，便于二次开发时替换为其他翻译引擎（如在线 API）。
 @MainActor
 protocol TextTranslating: AnyObject {
-    /// 设定翻译语言对（内部建立会话）
+    /// 设定翻译语言对
     func setLanguagePair(source: Locale.Language, target: Locale.Language) async
+    /// 接入由 SwiftUI translationTask 提供的系统翻译会话
+    func attach(session: TranslationSession)
     /// 翻译单条文本；失败时返回 nil（界面回退为仅显示原文）
     func translate(_ text: String) async -> String?
     var onTranslationError: ((_ message: String) -> Void)? { get set }
 }
 
-/// 基于系统 Translation 框架的实现（iOS 18+）。
-/// 所有翻译均在设备端完成；要求设备已安装对应语言包。
+/// 基于系统 Translation 框架的实现。
+/// 会话由视图层 .translationTask(source:target:) 注入：
+/// - 兼容 iOS 18-25（程序化构造器已随新 SDK 移除，直接 init 仅 iOS 26+ 可用）；
+/// - 由 SwiftUI 自动等待语言包就绪，无需手动处理下载。
 @MainActor
 final class TranslationService: ObservableObject, TextTranslating {
 
@@ -28,13 +32,12 @@ final class TranslationService: ObservableObject, TextTranslating {
         guard activeSource != source || activeTarget != target else { return }
         activeSource = source
         activeTarget = target
-        session?.cancel()
+        // 语言变化后 translationTask 会自动重建并重新注入新会话
         session = nil
-        do {
-            session = try await TranslationSession(installedSource: source, target: target)
-        } catch {
-            onTranslationError?("翻译服务初始化失败：\(error.localizedDescription)。请确认设备已安装对应语言（系统设置 → 通用 → 语言与地区）。")
-        }
+    }
+
+    func attach(session: TranslationSession) {
+        self.session = session
     }
 
     func translate(_ text: String) async -> String? {

@@ -41,7 +41,20 @@ struct LiveCaptionsView: View {
             } message: {
                 Text(viewModel.errorMessage ?? "")
             }
+            .translationTask(source: sourceLanguage, target: targetLanguage) { session in
+                viewModel.attachTranslationSession(session)
+            }
         }
+    }
+
+    // MARK: - 翻译会话（SwiftUI 注入，兼容 iOS 18+）
+
+    private var sourceLanguage: Locale.Language {
+        Locale.Language(identifier: settings.sourceLanguageIdentifier)
+    }
+
+    private var targetLanguage: Locale.Language {
+        Locale.Language(identifier: settings.targetLanguageIdentifier)
     }
 
     // MARK: - 字幕列表
