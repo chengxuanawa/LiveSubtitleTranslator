@@ -11,12 +11,9 @@ struct LiveCaptionsView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                captionStage
+                Divider()
                 segmentList
-
-                if !viewModel.livePartialText.isEmpty {
-                    livePreviewBanner
-                }
-
                 Divider()
                 controlBar
             }
@@ -56,40 +53,51 @@ struct LiveCaptionsView: View {
     private var segmentList: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                if viewModel.segments.isEmpty {
-                    ContentUnavailableView(
-                        "点击下方按钮开始",
-                        systemImage: "captions.bubble",
-                        description: Text(emptyStateDescription)
-                    )
-                    .padding(.top, 100)
-                } else {
-                    ForEach(viewModel.segments) { segment in
-                        CaptionSegmentRow(segment: segment)
-                    }
+                ForEach(viewModel.segments) { segment in
+                    CaptionSegmentRow(segment: segment)
                 }
             }
             .padding(.vertical, 12)
         }
     }
 
-    private var emptyStateDescription: String {
-        viewModel.audioSourceMode == .microphone
-            ? "本机识别语音并实时生成双语字幕"
-            : "先点击下方广播按钮，在系统弹窗中选择本 App，再播放需要字幕的音频"
+    // MARK: - 顶部大字幕
+
+    private var captionStage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(displayOriginal)
+                .font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(3)
+            if let translated = displayTranslation {
+                Text(translated)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(3)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
     }
 
-    // MARK: - 实时预览
+    private var displayOriginal: String {
+        if !viewModel.livePartialText.isEmpty {
+            return viewModel.livePartialText
+        }
+        if let last = viewModel.segments.last {
+            return last.originalText
+        }
+        return viewModel.audioSourceMode == .microphone
+            ? "点击下方按钮开始，实时字幕将显示在这里"
+            : "点击广播按钮开始，字幕将显示在这里"
+    }
 
-    private var livePreviewBanner: some View {
-        Text(viewModel.livePartialText)
-            .font(.body)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .padding(.horizontal, 12)
-            .transition(.opacity)
+    private var displayTranslation: String? {
+        guard viewModel.livePartialText.isEmpty, let last = viewModel.segments.last else { return nil }
+        return last.displayTranslatedText
     }
 
     // MARK: - 控制区

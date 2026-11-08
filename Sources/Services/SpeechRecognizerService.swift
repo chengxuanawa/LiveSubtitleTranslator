@@ -60,6 +60,10 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     private var isTapInstalled = false
     private var isRunning = false
     private var consecutiveTaskErrors = 0
+    private var isFinalizing = false
+    private var finalizationDeadline: Date?
+    private var pendingPartialText = ""
+    private var lastSegmentEnd: TimeInterval = 0
 
     // MARK: - 生命周期
 
@@ -136,6 +140,10 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         sessionStartDate = Date()
         isRunning = true
         consecutiveTaskErrors = 0
+        isFinalizing = false
+        finalizationDeadline = nil
+        pendingPartialText = ""
+        lastSegmentEnd = 0
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
@@ -144,6 +152,14 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     }
 
     func stop() {
+        // 提交尚未终态的最后一句话，避免停止后内容丢失
+        if isRunning {
+            let trailing = pendingPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trailing.isEmpty {
+                submitSegment(trailing)
+            }
+        }
+        pendingPartialText = ""
         isRunning = false
         recognitionRequest?.endAudio()
         recognitionTask?.finish()
@@ -180,6 +196,10 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         sessionStartDate = Date()
         isRunning = true
         consecutiveTaskErrors = 0
+        isFinalizing = false
+        finalizationDeadline = nil
+        pendingPartialText = ""
+        lastSegmentEnd = 0
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
@@ -224,10 +244,21 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     private func handleRecognitionResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
         guard isRunning else { return }
 
+        // 兜底：请求收尾后系统迟迟不返回 final 时，强制提交当前文本并续接
+        if let deadline = finalizationDeadline, Date() > deadline {
+            finalizationDeadline = nil
+            isFinalizing = false
+            commitPendingPartial()
+            restartRecognition()
+        }
+
         if let error {
             // 单句任务超时/结束是流式识别的正常现象，自动续接；连续失败才上报并停止
             consecutiveTaskErrors += 1
             if consecutiveTaskErrors <= 3 {
+                commitPendingPartial()
+                isFinalizing = false
+                finalizationDeadline = nil
                 restartRecognition()
             } else {
                 onError?("识别中断：\(error.localizedDescription)")
@@ -242,19 +273,53 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         onPartialUpdate?(transcription.formattedString)
 
         if result.isFinal {
+            isFinalizing = false
+            finalizationDeadline = nil
+            pendingPartialText = ""
             let text = transcription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                let startTime: TimeInterval
-                if let lastSegment = transcription.segments.last {
-                    startTime = lastSegment.timestamp
-                } else {
-                    startTime = Date().timeIntervalSince(sessionStartDate)
-                }
-                onFinalSegment?(text, startTime)
+                submitSegment(text)
             }
             // 关键：SFSpeech 单个任务在 isFinal 后即完成，必须续接新任务才能持续转写
             restartRecognition()
+            return
         }
+
+        // 自动分段：句末标点或长句达到阈值时，请求当前任务收尾，等待 final 后落库
+        let partial = transcription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingPartialText = partial
+        if shouldRequestFinal(for: partial) {
+            isFinalizing = true
+            finalizationDeadline = Date().addingTimeInterval(2.5)
+            recognitionRequest?.endAudio()
+        }
+    }
+
+    /// 提交当前未终态文本（兜底用）
+    private func commitPendingPartial() {
+        let text = pendingPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingPartialText = ""
+        guard !text.isEmpty else { return }
+        submitSegment(text)
+    }
+
+    /// 段落落库：使用会话内累计时间作为起点，保证时间轴连续
+    private func submitSegment(_ text: String) {
+        let now = Date().timeIntervalSince(sessionStartDate)
+        let start = lastSegmentEnd
+        lastSegmentEnd = now
+        onFinalSegment?(text, start)
+    }
+
+    /// 判断是否需要主动结束当前识别任务以切分段落
+    private func shouldRequestFinal(for text: String) -> Bool {
+        guard !text.isEmpty, !isFinalizing else { return false }
+        if text.count >= 40 { return true }
+        let terminators: [Character] = ["。", "！", "？", ".", "!", "?", "…"]
+        if let last = text.last, terminators.contains(last), text.count >= 6 {
+            return true
+        }
+        return false
     }
 
     /// 保持麦克风 / 外部音频输入不变，仅更换识别请求与任务，实现连续识别
