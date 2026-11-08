@@ -7,7 +7,6 @@ final class SettingsStore: ObservableObject {
     @AppStorage("sourceLanguageIdentifier") var sourceLanguageIdentifier = "zh-Hans"
     @AppStorage("targetLanguageIdentifier") var targetLanguageIdentifier = "en-US"
     @AppStorage("requiresOnDeviceRecognition") var requiresOnDeviceRecognition = true
-    @AppStorage("autoScrollToLatest") var autoScrollToLatest = true
     /// 录制开始时自动开启灵动岛字幕（默认关闭，由用户手动开启）
     @AppStorage("autoStartLiveActivity") var autoStartLiveActivity = false
     /// 音频来源：麦克风 / 系统共享音频

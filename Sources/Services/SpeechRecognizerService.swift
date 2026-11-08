@@ -58,6 +58,8 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var sessionStartDate = Date()
     private var isTapInstalled = false
+    private var isRunning = false
+    private var consecutiveTaskErrors = 0
 
     // MARK: - 生命周期
 
@@ -132,6 +134,8 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
 
         // 6. 开始识别任务
         sessionStartDate = Date()
+        isRunning = true
+        consecutiveTaskErrors = 0
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
@@ -140,6 +144,7 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     }
 
     func stop() {
+        isRunning = false
         recognitionRequest?.endAudio()
         recognitionTask?.finish()
         tearDown()
@@ -173,6 +178,8 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
         self.recognizer = recognizer
         self.recognitionRequest = request
         sessionStartDate = Date()
+        isRunning = true
+        consecutiveTaskErrors = 0
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 self?.handleRecognitionResult(result, error: error)
@@ -185,6 +192,7 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     }
 
     private func tearDown() {
+        isRunning = false
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
@@ -214,29 +222,59 @@ final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
     // MARK: - 识别回调
 
     private func handleRecognitionResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
-        if let error {
-            onError?("识别中断：\(error.localizedDescription)")
-            tearDown()
-            return
-        }
-        guard let result else {
-            onError?("未能获取识别结果。")
-            return
-        }
+        guard isRunning else { return }
 
+        if let error {
+            // 单句任务超时/结束是流式识别的正常现象，自动续接；连续失败才上报并停止
+            consecutiveTaskErrors += 1
+            if consecutiveTaskErrors <= 3 {
+                restartRecognition()
+            } else {
+                onError?("识别中断：\(error.localizedDescription)")
+                tearDown()
+            }
+            return
+        }
+        guard let result else { return }
+
+        consecutiveTaskErrors = 0
         let transcription = result.bestTranscription
         onPartialUpdate?(transcription.formattedString)
 
         if result.isFinal {
             let text = transcription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
-            let startTime: TimeInterval
-            if let lastSegment = transcription.segments.last {
-                startTime = lastSegment.timestamp
-            } else {
-                startTime = Date().timeIntervalSince(sessionStartDate)
+            if !text.isEmpty {
+                let startTime: TimeInterval
+                if let lastSegment = transcription.segments.last {
+                    startTime = lastSegment.timestamp
+                } else {
+                    startTime = Date().timeIntervalSince(sessionStartDate)
+                }
+                onFinalSegment?(text, startTime)
             }
-            onFinalSegment?(text, startTime)
+            // 关键：SFSpeech 单个任务在 isFinal 后即完成，必须续接新任务才能持续转写
+            restartRecognition()
+        }
+    }
+
+    /// 保持麦克风 / 外部音频输入不变，仅更换识别请求与任务，实现连续识别
+    private func restartRecognition() {
+        guard isRunning, let recognizer else { return }
+        recognitionRequest?.endAudio()
+        recognitionTask = nil
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.addsPunctuation = true
+        request.taskHint = .dictation
+        if requiresOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+        recognitionRequest = request
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor [weak self] in
+                self?.handleRecognitionResult(result, error: error)
+            }
         }
     }
 }

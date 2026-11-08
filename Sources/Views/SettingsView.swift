@@ -57,7 +57,6 @@ struct SettingsView: View {
     private var recognitionSection: some View {
         Section {
             Toggle("仅在本机识别（离线）", isOn: $settings.requiresOnDeviceRecognition)
-            Toggle("自动滚动到最新字幕", isOn: $settings.autoScrollToLatest)
         } header: {
             Text("识别")
         } footer: {

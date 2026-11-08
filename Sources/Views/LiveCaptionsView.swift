@@ -6,7 +6,6 @@ struct LiveCaptionsView: View {
     @EnvironmentObject private var viewModel: LiveSessionViewModel
     @EnvironmentObject private var settings: SettingsStore
 
-    private let bottomAnchorID = "bottomAnchor"
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
 
     var body: some View {
@@ -33,17 +32,6 @@ struct LiveCaptionsView: View {
                     settingsMenu
                 }
             }
-            .alert(
-                "无法开始识别",
-                isPresented: Binding(
-                    get: { viewModel.errorMessage != nil },
-                    set: { if !$0 { viewModel.dismissError() } }
-                )
-            ) {
-                Button("好", role: .cancel) {}
-            } message: {
-                Text(viewModel.errorMessage ?? "")
-            }
             .translationTask(source: sourceLanguage, target: targetLanguage) { session in
                 viewModel.attachTranslationSession(session)
             }
@@ -63,36 +51,25 @@ struct LiveCaptionsView: View {
         Locale.Language(identifier: settings.targetLanguageIdentifier)
     }
 
-    // MARK: - 字幕列表
+    // MARK: - 字幕列表（按时间从上到下逐行排列，不自动滚动）
 
     private var segmentList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    if viewModel.segments.isEmpty {
-                        ContentUnavailableView(
-                            "点击下方按钮开始",
-                            systemImage: "captions.bubble",
-                            description: Text(emptyStateDescription)
-                        )
-                        .padding(.top, 100)
-                    } else {
-                        ForEach(viewModel.segments) { segment in
-                            CaptionSegmentRow(segment: segment)
-                        }
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                if viewModel.segments.isEmpty {
+                    ContentUnavailableView(
+                        "点击下方按钮开始",
+                        systemImage: "captions.bubble",
+                        description: Text(emptyStateDescription)
+                    )
+                    .padding(.top, 100)
+                } else {
+                    ForEach(viewModel.segments) { segment in
+                        CaptionSegmentRow(segment: segment)
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(bottomAnchorID)
                 }
-                .padding(.vertical, 12)
             }
-            .onChange(of: viewModel.segments.count) { _, _ in
-                scrollToBottom(proxy)
-            }
-            .onChange(of: viewModel.livePartialText) { _, _ in
-                scrollToBottom(proxy)
-            }
+            .padding(.vertical, 12)
         }
     }
 
@@ -100,13 +77,6 @@ struct LiveCaptionsView: View {
         viewModel.audioSourceMode == .microphone
             ? "本机识别语音并实时生成双语字幕"
             : "先点击下方广播按钮，在系统弹窗中选择本 App，再播放需要字幕的音频"
-    }
-
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        guard settings.autoScrollToLatest else { return }
-        withAnimation(.easeOut(duration: 0.25)) {
-            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-        }
     }
 
     // MARK: - 实时预览
@@ -125,13 +95,23 @@ struct LiveCaptionsView: View {
     // MARK: - 控制区
 
     private var controlBar: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
+            if let message = viewModel.errorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .onTapGesture { viewModel.dismissError() }
+            }
+
             HStack(spacing: 20) {
                 if viewModel.audioSourceMode == .microphone {
                     recordButton
                 } else {
+                    // 系统共享音频：广播按钮常驻，点击直接弹出系统共享界面
                     BroadcastPickerView(preferredExtension: broadcastExtensionID)
-                        .frame(width: 48, height: 48)
+                        .frame(width: 56, height: 56)
                         .accessibilityLabel("开始系统广播")
                     if viewModel.state == .listening {
                         stopButton
@@ -139,8 +119,10 @@ struct LiveCaptionsView: View {
                 }
                 if viewModel.state == .listening {
                     liveActivityButton
+                    pipButton
                 }
             }
+
             Text(statusText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -195,6 +177,20 @@ struct LiveCaptionsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕")
+    }
+
+    private var pipButton: some View {
+        Button {
+            viewModel.togglePictureInPicture()
+        } label: {
+            Image(systemName: viewModel.isPictureInPictureActive ? "pip.exit" : "pip.enter")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(viewModel.isPictureInPictureActive ? Color.accentColor : .secondary)
+                .frame(width: 52, height: 52)
+                .background(Color(.secondarySystemBackground), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕")
     }
 
     private var statusText: String {
