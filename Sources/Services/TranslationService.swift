@@ -12,7 +12,7 @@ protocol TextTranslating: AnyObject {
 }
 
 /// 基于系统 Translation 框架的实现（iOS 18+）。
-/// 系统默认“灵活模式”：优先使用设备端语言模型，缺失时回退服务器。
+/// 所有翻译均在设备端完成；要求设备已安装对应语言包。
 @MainActor
 final class TranslationService: ObservableObject, TextTranslating {
 
@@ -28,12 +28,12 @@ final class TranslationService: ObservableObject, TextTranslating {
         guard activeSource != source || activeTarget != target else { return }
         activeSource = source
         activeTarget = target
-        session?.invalidate()
+        session?.cancel()
         session = nil
         do {
-            session = try await TranslationSession(sourceLanguage: source, targetLanguage: target)
+            session = try await TranslationSession(installedSource: source, target: target)
         } catch {
-            onTranslationError?("翻译服务初始化失败：\(error.localizedDescription)")
+            onTranslationError?("翻译服务初始化失败：\(error.localizedDescription)。请确认设备已安装对应语言（系统设置 → 通用 → 语言与地区）。")
         }
     }
 
@@ -56,8 +56,8 @@ final class TranslationService: ObservableObject, TextTranslating {
             while !self.pendingItems.isEmpty {
                 let item = self.pendingItems.removeFirst()
                 do {
-                    let responses = try await self.session?.translations(from: [item.text])
-                    item.continuation.resume(returning: responses?.first?.targetText)
+                    let response = try await self.session?.translate(item.text)
+                    item.continuation.resume(returning: response?.targetText)
                 } catch {
                     item.continuation.resume(returning: nil)
                     self.onTranslationError?(error.localizedDescription)

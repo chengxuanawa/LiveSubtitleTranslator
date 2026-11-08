@@ -119,20 +119,24 @@ struct SettingsView: View {
     // MARK: - 权限
 
     private var permissionSection: some View {
-        Section("权限") {
+        Section {
             Link(destination: URL(string: UIApplication.openSettingsURLString)!) {
                 Label("打开应用权限设置", systemImage: "lock.shield")
             }
+        } header: {
+            Text("权限")
         }
     }
 
     // MARK: - 关于
 
     private var aboutSection: some View {
-        Section("关于") {
+        Section {
             LabeledContent("版本", value: appVersion)
             LabeledContent("最低系统", value: "iOS 18.0")
             LabeledContent("技术栈", value: "Speech · Translation · FoundationModels · ActivityKit")
+        } header: {
+            Text("关于")
         } footer: {
             Text("提示：受 iOS 沙盒限制，App 无法悬浮在其他应用上显示字幕。如需系统级实时字幕，可前往 系统设置 → 辅助功能 → 实时字幕 开启。")
         }
