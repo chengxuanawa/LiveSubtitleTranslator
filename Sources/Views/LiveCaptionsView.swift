@@ -149,14 +149,50 @@ struct LiveCaptionsView: View {
                         .transition(
                             .move(edge: .trailing).combined(with: .opacity)
                         )
+                } else {
+                    audioModeButton
+                        .transition(.scale.combined(with: .opacity))
                 }
 
                 primaryControl
+                    .id(viewModel.audioSourceMode)
+                    .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
-            .animation(.spring(response: 0.34, dampingFraction: 0.78), value: viewModel.state)
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.state)
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)
         }
         .padding(.trailing, 20)
         .padding(.bottom, 16)
+    }
+
+    /// 音频来源切换：麦克风模式下显示红色圆点，系统共享音频模式下显示麦克风图标
+    private var audioModeButton: some View {
+        Button {
+            switchAudioSource()
+        } label: {
+            Image(systemName: settings.audioSourceMode == .microphone ? "circle.fill" : "mic.fill")
+                .font(.system(size: settings.audioSourceMode == .microphone ? 16 : 18, weight: .bold))
+                .foregroundStyle(settings.audioSourceMode == .microphone ? Color.red : Color.accentColor)
+                .frame(width: 44, height: 44)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .accessibilityLabel(settings.audioSourceMode == .microphone ? "切换到系统共享音频" : "切换到麦克风")
+    }
+
+    /// 切换音频来源；切换后主按钮会以原生弹簧动画替换为广播按钮/麦克风按钮
+    private func switchAudioSource() {
+        if viewModel.state == .listening {
+            viewModel.stop()
+        }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            settings.audioSourceMode = settings.audioSourceMode == .microphone ? .systemAudio : .microphone
+            settings.objectWillChange.send()
+        }
+        if settings.audioSourceMode == .systemAudio {
+            viewModel.prepareSystemAudioServer()
+        }
     }
 
     /// 实时翻译开关：录音开始后从主按钮左侧弹出
@@ -169,6 +205,7 @@ struct LiveCaptionsView: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(settings.realtimeTranslationEnabled ? Color.accentColor : .secondary)
                 .frame(width: 44, height: 44)
+                .symbolEffect(.bounce, value: settings.realtimeTranslationEnabled)
                 .animation(.easeInOut(duration: 0.2), value: settings.realtimeTranslationEnabled)
         }
         .buttonStyle(.plain)
@@ -202,6 +239,7 @@ struct LiveCaptionsView: View {
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 62, height: 62)
+                .contentTransition(.symbolEffect(.replace))
                 .symbolEffect(.variableColor.iterative, isActive: viewModel.state == .listening)
         }
         .buttonStyle(.plain)
@@ -236,6 +274,7 @@ struct LiveCaptionsView: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(viewModel.isLiveActivityActive ? Color.accentColor : .secondary)
                 .frame(width: 44, height: 44)
+                .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕")
@@ -249,6 +288,7 @@ struct LiveCaptionsView: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(viewModel.isPictureInPictureActive ? Color.accentColor : .secondary)
                 .frame(width: 44, height: 44)
+                .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕")
@@ -270,14 +310,14 @@ struct LiveCaptionsView: View {
         .accessibilityLabel("清空字幕")
     }
 
-    /// 语言切换：整块液态玻璃胶囊，中间箭头可点击对换
+    /// 语言切换：源语言、目标语言各一个独立模块，中间箭头透明可点击对换
     private var languageControls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 2) {
             sourceLanguageMenu
             Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 26, height: 30)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
                 .onTapGesture { swapLanguages() }
                 .accessibilityLabel("对换语言")
@@ -285,9 +325,6 @@ struct LiveCaptionsView: View {
                 .accessibilityAction { swapLanguages() }
             targetLanguageMenu
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .glassEffect(.regular, in: Capsule())
     }
 
     /// 对换识别语言与翻译语言
@@ -324,10 +361,10 @@ struct LiveCaptionsView: View {
 
     private func languageChip(_ name: String) -> some View {
         Text(shortName(name))
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.primary)
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .background(.quaternary, in: Capsule())
     }
 
     private func shortName(_ name: String) -> String {
