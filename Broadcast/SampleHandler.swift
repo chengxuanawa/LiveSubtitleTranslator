@@ -151,7 +151,6 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
         if converter == nil || converterInputFormat != input.format {
             converter = AVAudioConverter(from: input.format, to: targetFormat)
-            converter?.sampleRateConverterQuality = .low
             converterInputFormat = input.format
         }
         guard let converter else { return nil }

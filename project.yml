@@ -1,4 +1,4 @@
-name: LiveSubtitleTranslator
+name: SubLingo
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
@@ -13,7 +13,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_LANGUAGE: zh-Hans
 targets:
-  LiveSubtitleTranslator:
+  SubLingo:
     type: application
     platform: iOS
     sources:
@@ -22,16 +22,16 @@ targets:
       path: Sources/Resources/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.livesubtitletranslator
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     dependencies:
-      - target: LiveSubtitleWidget
+      - target: SubLingoWidget
         embed: true
-      - target: LiveSubtitleBroadcast
+      - target: SubLingoBroadcast
         embed: true
-  LiveSubtitleWidget:
+  SubLingoWidget:
     type: app-extension
     platform: iOS
     sources:
@@ -41,10 +41,10 @@ targets:
       path: Widget/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.livesubtitletranslator.widget
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo.widget
         SKIP_INSTALL: "YES"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
-  LiveSubtitleBroadcast:
+  SubLingoBroadcast:
     type: app-extension
     platform: iOS
     sources:
@@ -54,14 +54,14 @@ targets:
       path: Broadcast/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.livesubtitletranslator.broadcast
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo.broadcast
         SKIP_INSTALL: "YES"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 schemes:
-  LiveSubtitleTranslator:
+  SubLingo:
     build:
       targets:
-        LiveSubtitleTranslator: all
+        SubLingo: all
     run:
       config: Debug
     archive:

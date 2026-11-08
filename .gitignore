@@ -15,4 +15,4 @@ build/
 *.perspectivev3
 
 # XcodeGen 生成的工程文件（本地与 CI 均由 xcodegen generate 生成）
-LiveSubtitleTranslator.xcodeproj/
+SubLingo.xcodeproj/

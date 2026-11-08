@@ -1,4 +1,4 @@
-# LiveSubtitleTranslator（实时字幕翻译）
+# SubLingo（译幕）
 
 [![CI](https://github.com/chengxuanawa/LiveSubtitleTranslator/actions/workflows/build.yml/badge.svg)](https://github.com/chengxuanawa/LiveSubtitleTranslator/actions/workflows/build.yml)
 
@@ -30,7 +30,7 @@
 ## 技术架构
 
 ```
-LiveSubtitleTranslator/
+SubLingo/
 ├── project.yml                     # XcodeGen：主 App + Widget 扩展 + 广播扩展
 ├── Broadcast/                      # ReplayKit 广播上传扩展（系统音频捕获）
 │   ├── SampleHandler.swift         # 捕获 .audioApp/.audioMic 采样，转 44.1k/16bit/单声道
@@ -75,12 +75,12 @@ LiveSubtitleTranslator/
 ```bash
 brew install xcodegen            # 如未安装
 xcodegen generate                # 生成主 App + 两个扩展 target
-open LiveSubtitleTranslator.xcodeproj
+open SubLingo.xcodeproj
 ```
 
 ### 方式二：手动创建
 
-1. Xcode → New Project → iOS App（SwiftUI，`LiveSubtitleTranslator`，最低 18.0）
+1. Xcode → New Project → iOS App（SwiftUI，`SubLingo`，最低 18.0）
 2. 将 `Sources` 拖入主 target，将 `Sources/Shared/` 同时加入扩展 target
 3. 新建 Widget Extension target（勾选 Live Activities）与 Broadcast Upload Extension target，分别用 `Widget/`、`Broadcast/` 目录
 4. 主 target Info.plist 合并 `Sources/Resources/Info.plist` 键（麦克风/语音识别用途、`UIBackgroundModes=audio`、`NSSupportsLiveActivities`、`UIApplicationSceneManifest`、`UIRequiresFullScreen=false`）
@@ -89,7 +89,7 @@ open LiveSubtitleTranslator.xcodeproj
 
 1. Signing & Capabilities 选择 Team（免费账号即可）
 2. 首次启动会弹出 AI 引擎选择；随后授权麦克风 / 语音识别
-3. 系统音频模式：点击字幕页下方广播按钮 → 系统弹窗选择「实时字幕翻译」→ 开始共享，再播放需要字幕的音频；停止请在控制中心点击红点
+3. 系统音频模式：点击字幕页下方广播按钮 → 系统弹窗选择「译幕」→ 开始共享，再播放需要字幕的音频；停止请在控制中心点击红点
 
 ## 二次开发指引
 
