@@ -117,15 +117,14 @@ final class AIService: ObservableObject {
 
     private func appleProviderValue() -> (any TextAIProviding)? {
         #if canImport(FoundationModels)
-        if #available(iOS 26.0, *) {
-            if let provider = appleProviderStorage as? AppleIntelligenceProvider {
-                return provider
-            }
-            let provider = AppleIntelligenceProvider()
-            appleProviderStorage = provider
+        if let provider = appleProviderStorage as? AppleIntelligenceProvider {
             return provider
         }
-        #endif
+        let provider = AppleIntelligenceProvider()
+        appleProviderStorage = provider
+        return provider
+        #else
         return nil
+        #endif
     }
 }

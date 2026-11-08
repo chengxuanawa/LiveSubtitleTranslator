@@ -52,6 +52,7 @@ jobs:
           APP="build/DerivedData-Device/Build/Products/Release-iphoneos/SubLingo.app"
           plutil -extract NSMicrophoneUsageDescription raw "$APP/Info.plist" > /dev/null
           plutil -extract NSSpeechRecognitionUsageDescription raw "$APP/Info.plist" > /dev/null
+          plutil -extract NSLocationWhenInUseUsageDescription raw "$APP/Info.plist" > /dev/null
           plutil -extract NSSupportsLiveActivities raw "$APP/Info.plist" > /dev/null
           plutil -extract UIBackgroundModes.0 raw "$APP/Info.plist" > /dev/null
           plutil -extract UIApplicationSceneManifest.UIApplicationSupportsMultipleScenes raw "$APP/Info.plist" > /dev/null

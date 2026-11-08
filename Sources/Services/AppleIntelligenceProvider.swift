@@ -96,20 +96,18 @@ final class AppleIntelligenceProvider: TextAIProviding {
 enum AppleIntelligenceAvailability {
     static var isAvailable: Bool {
         #if canImport(FoundationModels)
-        if #available(iOS 26.0, *) {
-            return AppleIntelligenceSupport.isAvailable
-        }
-        #endif
+        return AppleIntelligenceSupport.isAvailable
+        #else
         return false
+        #endif
     }
 
     static var unavailabilityReason: String? {
         #if canImport(FoundationModels)
-        if #available(iOS 26.0, *) {
-            let reason = AppleIntelligenceSupport.unavailabilityReason
-            return reason.isEmpty ? nil : reason
-        }
-        #endif
+        let reason = AppleIntelligenceSupport.unavailabilityReason
+        return reason.isEmpty ? nil : reason
+        #else
         return "当前设备或系统版本不支持 Apple Intelligence"
+        #endif
     }
 }

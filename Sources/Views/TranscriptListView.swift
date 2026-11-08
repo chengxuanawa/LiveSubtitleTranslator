@@ -30,8 +30,7 @@ struct TranscriptListView: View {
                 }
             }
             .navigationTitle("字幕记录")
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .softTopEdgeEffect()
             .navigationDestination(for: TranscriptSession.self) { session in
                 TranscriptDetailView(session: session)
             }
@@ -54,6 +53,10 @@ struct TranscriptListView: View {
         case .time:
             return session.startedAt.formatted(date: .abbreviated, time: .shortened)
         case .snippet:
+            // 优先显示录制地点；无定位权限或定位失败时回退首句字幕
+            if let location = session.locationName, !location.isEmpty {
+                return location
+            }
             if let first = session.segments.first?.originalText, !first.isEmpty {
                 return String(first.prefix(24))
             }
@@ -64,6 +67,7 @@ struct TranscriptListView: View {
                 .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
                 return String(firstLine.prefix(30))
             }
+            // 尚无摘要时暂显示时间；在会话详情生成 AI 摘要后即生效
             return session.startedAt.formatted(date: .abbreviated, time: .shortened)
         }
     }
@@ -75,14 +79,25 @@ struct TranscriptListView: View {
     }
 }
 
-/// 单次会话详情（分段查看 + 分享导出）
+/// 单次会话详情（AI 摘要 + 分段查看 + 分享导出）
 private struct TranscriptDetailView: View {
 
-    let session: TranscriptSession
+    @EnvironmentObject private var store: TranscriptStore
+    @EnvironmentObject private var aiService: AIService
+
+    @State private var session: TranscriptSession
+    @State private var isSummarizing = false
+
+    init(session: TranscriptSession) {
+        _session = State(initialValue: session)
+    }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
+                if let summary = session.summary {
+                    summaryCard(summary)
+                }
                 ForEach(session.segments) { segment in
                     CaptionSegmentRow(segment: segment)
                 }
@@ -92,14 +107,58 @@ private struct TranscriptDetailView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        .softTopEdgeEffect()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                summarizeButton
                 ShareLink(item: session.exportText()) {
                     Image(systemName: "square.and.arrow.up")
                 }
             }
         }
+    }
+
+    // MARK: - AI 摘要
+
+    private var summarizeButton: some View {
+        Button {
+            summarize()
+        } label: {
+            if isSummarizing {
+                ProgressView()
+            } else {
+                Image(systemName: "sparkles")
+            }
+        }
+        .disabled(!aiService.isAvailable || isSummarizing)
+        .accessibilityLabel("生成 AI 摘要")
+    }
+
+    private func summarize() {
+        guard !isSummarizing else { return }
+        isSummarizing = true
+        Task {
+            let summary = await aiService.summarize(session: session)
+            if let summary {
+                session.summary = summary
+                store.save(session)
+            }
+            isSummarizing = false
+        }
+    }
+
+    private func summaryCard(_ summary: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("AI 摘要", systemImage: "sparkles")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(summary)
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
     }
 }

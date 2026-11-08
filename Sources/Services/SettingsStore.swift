@@ -6,15 +6,16 @@ import SwiftUI
 final class SettingsStore: ObservableObject {
     @AppStorage("sourceLanguageIdentifier") var sourceLanguageIdentifier = "zh-Hans"
     @AppStorage("targetLanguageIdentifier") var targetLanguageIdentifier = "en-US"
-    @AppStorage("requiresOnDeviceRecognition") var requiresOnDeviceRecognition = true
-    /// 录制开始时自动开启灵动岛字幕（默认关闭，由用户手动开启）
+    /// 录制开始时自动开启字幕浮窗（灵动岛或画中画，按机型自动选择）
     @AppStorage("autoStartLiveActivity") var autoStartLiveActivity = false
     /// 音频来源：麦克风 / 系统共享音频
     @AppStorage("audioSourceModeRaw") private var audioSourceModeRaw = AudioSourceMode.microphone.rawValue
     /// 字幕记录列表标题样式
     @AppStorage("recordTitleStyleRaw") private var recordTitleStyleRaw = RecordTitleStyle.time.rawValue
+    /// 字幕浮窗显示方式
+    @AppStorage("visualModeRaw") private var visualModeRaw = VisualMode.auto.rawValue
 
-    // AI 底层配置保留（UI 入口已移除，仅用于兼容历史摘要数据）
+    // AI 底层配置保留（仅用于摘要数据兼容）
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue
     @AppStorage("aiAPIEndpoint") var aiAPIEndpoint = ""
     @AppStorage("aiAPIModel") var aiAPIModel = ""
@@ -33,6 +34,11 @@ final class SettingsStore: ObservableObject {
     var recordTitleStyle: RecordTitleStyle {
         get { RecordTitleStyle(rawValue: recordTitleStyleRaw) ?? .time }
         set { recordTitleStyleRaw = newValue.rawValue }
+    }
+
+    var visualMode: VisualMode {
+        get { VisualMode(rawValue: visualModeRaw) ?? .auto }
+        set { visualModeRaw = newValue.rawValue }
     }
 
     var isAPIConfigured: Bool {

@@ -14,9 +14,8 @@ protocol TextTranslating: AnyObject {
 }
 
 /// 基于系统 Translation 框架的实现。
-/// 会话由视图层 .translationTask(source:target:) 注入：
-/// - 兼容 iOS 18-25（程序化构造器已随新 SDK 移除，直接 init 仅 iOS 26+ 可用）；
-/// - 由 SwiftUI 自动等待语言包就绪，无需手动处理下载。
+/// 会话由视图层 .translationTask(source:target:) 注入，
+/// 由 SwiftUI 自动等待语言包就绪，无需手动处理下载。
 @MainActor
 final class TranslationService: ObservableObject, TextTranslating {
 

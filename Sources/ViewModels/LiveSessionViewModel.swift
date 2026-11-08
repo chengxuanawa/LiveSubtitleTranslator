@@ -1,8 +1,9 @@
 import Foundation
 import SwiftUI
 import Translation
+import UIKit
 
-/// 编排一次实时字幕会话：语音识别 → 追加片段 → 异步翻译回填 → 灵动岛/画中画同步 → 结束保存。
+/// 编排一次实时字幕会话：语音识别 → 追加片段 → 异步翻译回填 → 字幕浮窗同步 → 结束保存。
 /// 支持两种音频来源：麦克风直录 / 系统共享音频（ReplayKit 广播扩展）。
 @MainActor
 final class LiveSessionViewModel: ObservableObject {
@@ -19,14 +20,14 @@ final class LiveSessionViewModel: ObservableObject {
     @Published private(set) var segments: [CaptionSegment] = []
     @Published var livePartialText = ""
     @Published var errorMessage: String?
-    /// 灵动岛字幕是否已开启（由用户手动触发）
+    /// 灵动岛字幕是否已开启（由用户手动触发或按设置自动开启）
     @Published private(set) var isLiveActivityActive = false
     /// 系统音频模式下是否正在等待广播连接
     @Published private(set) var isWaitingForBroadcast = false
     /// 画中画字幕是否已激活
     @Published private(set) var isPictureInPictureActive = false
 
-    // MARK: - 依赖（协议抽象，便于二次开发替换引擎）
+    // MARK: - 依赖
 
     private let speechRecognizer: any SpeechRecognizing
     private let translationService: any TextTranslating
@@ -34,15 +35,21 @@ final class LiveSessionViewModel: ObservableObject {
     private let transcriptStore: TranscriptStore
     private let liveActivity: LiveActivityService
     private let systemAudioServer: SystemAudioStreamServer
+    private let locationService = LocationService()
     private let keepAlive = SilentAudioKeepAlive()
     private let pipController = CaptionPictureInPictureController()
 
     // MARK: - 会话上下文
 
+    private var sessionID = UUID()
     private var sessionStart = Date()
+    private var sessionEnd: Date?
     private var sourceIdentifier = ""
     private var targetIdentifier = ""
     private var lastVisualUpdate = Date.distantPast
+    /// 本次录制的地点名（定位完成后写入，用于「位置」标题）
+    private var sessionLocationName: String?
+    private var locationTask: Task<Void, Never>?
 
     init(
         speechRecognizer: any SpeechRecognizing,
@@ -156,9 +163,7 @@ final class LiveSessionViewModel: ObservableObject {
         errorMessage = nil
         segments = []
         livePartialText = ""
-        sessionStart = Date()
-        sourceIdentifier = settings.sourceLanguageIdentifier
-        targetIdentifier = settings.targetLanguageIdentifier
+        startNewSessionContext()
 
         await translationService.setLanguagePair(
             source: Locale.Language(identifier: sourceIdentifier),
@@ -166,14 +171,11 @@ final class LiveSessionViewModel: ObservableObject {
         )
 
         speechRecognizer.locale = Locale(identifier: sourceIdentifier)
-        speechRecognizer.requiresOnDeviceRecognition = settings.requiresOnDeviceRecognition
         await speechRecognizer.start()
 
         if errorMessage == nil {
             state = .listening
-            if settings.autoStartLiveActivity {
-                isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
-            }
+            autoStartVisualIfNeeded()
         }
     }
 
@@ -186,18 +188,13 @@ final class LiveSessionViewModel: ObservableObject {
         errorMessage = nil
         segments = []
         livePartialText = ""
-        sessionStart = Date()
-        sourceIdentifier = settings.sourceLanguageIdentifier
-        targetIdentifier = settings.targetLanguageIdentifier
+        startNewSessionContext()
 
         speechRecognizer.locale = Locale(identifier: sourceIdentifier)
-        speechRecognizer.requiresOnDeviceRecognition = settings.requiresOnDeviceRecognition
         state = .listening
         // 广播期间保持后台运行，确保本地音频服务器不被挂起
         keepAlive.start()
-        if settings.autoStartLiveActivity {
-            isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
-        }
+        autoStartVisualIfNeeded()
 
         Task { [weak self] in
             guard let self else { return }
@@ -229,6 +226,7 @@ final class LiveSessionViewModel: ObservableObject {
         pipController.stop()
         isLiveActivityActive = false
         isPictureInPictureActive = false
+        sessionEnd = Date()
         state = .ended
         saveCurrentSession()
     }
@@ -243,9 +241,67 @@ final class LiveSessionViewModel: ObservableObject {
         errorMessage = nil
     }
 
-    /// 接入 SwiftUI translationTask 提供的系统翻译会话（iOS 18+ 兼容路径）
+    /// 接入 SwiftUI translationTask 提供的系统翻译会话
     func attachTranslationSession(_ session: TranslationSession) {
         translationService.attach(session: session)
+    }
+
+    // MARK: - 会话上下文 / 浮窗自动选择
+
+    /// 每次开始录制时重置会话标识、计时与地点
+    private func startNewSessionContext() {
+        sessionID = UUID()
+        sessionStart = Date()
+        sessionEnd = nil
+        sourceIdentifier = settings.sourceLanguageIdentifier
+        targetIdentifier = settings.targetLanguageIdentifier
+        sessionLocationName = nil
+        startLocationCapture()
+    }
+
+    /// 定位仅用于「位置」标题；未选择该标题时不请求权限
+    private func startLocationCapture() {
+        locationTask?.cancel()
+        guard settings.recordTitleStyle == .snippet else { return }
+        let currentSessionID = sessionID
+        locationTask = Task { [weak self] in
+            guard let self else { return }
+            let placeName = await self.locationService.currentPlaceName()
+            guard !Task.isCancelled, self.sessionID == currentSessionID else { return }
+            guard let placeName, !placeName.isEmpty else { return }
+            self.sessionLocationName = placeName
+            // 定位结果晚于停止时，补写已保存的记录
+            if self.state == .ended {
+                self.saveCurrentSession()
+            }
+        }
+    }
+
+    /// 自动模式：有灵动岛的 iPhone 用灵动岛；iPad 等默认用画中画
+    private var effectiveVisualMode: VisualMode {
+        switch settings.visualMode {
+        case .auto:
+            return UIDevice.current.userInterfaceIdiom == .pad ? .pictureInPicture : .liveActivity
+        case .liveActivity, .pictureInPicture:
+            return settings.visualMode
+        }
+    }
+
+    private func autoStartVisualIfNeeded() {
+        guard settings.autoStartLiveActivity else { return }
+        switch effectiveVisualMode {
+        case .liveActivity:
+            isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
+            if isLiveActivityActive {
+                liveActivity.update(originalText: "正在聆听…", translatedText: nil)
+            }
+        case .pictureInPicture:
+            guard CaptionPictureInPictureController.isSupported else { return }
+            _ = pipController.start()
+            pipController.update(original: "正在聆听…", translated: nil)
+        case .auto:
+            break
+        }
     }
 
     // MARK: - 私有
@@ -260,7 +316,7 @@ final class LiveSessionViewModel: ObservableObject {
         isPictureInPictureActive = false
     }
 
-    /// 部分识别结果节流同步到灵动岛 / 画中画（约 1 秒一次，避免刷新过频）
+    /// 部分识别结果节流同步到灵动岛 / 画中画（约 1 秒一次）
     private func pushPartialUpdate(_ text: String) {
         guard !text.isEmpty else { return }
         let now = Date()
@@ -309,11 +365,13 @@ final class LiveSessionViewModel: ObservableObject {
     private func saveCurrentSession() {
         guard !segments.isEmpty else { return }
         let session = TranscriptSession(
+            id: sessionID,
             startedAt: sessionStart,
-            endedAt: Date(),
+            endedAt: sessionEnd ?? Date(),
             sourceLanguageIdentifier: sourceIdentifier,
             targetLanguageIdentifier: targetIdentifier,
-            segments: segments
+            segments: segments,
+            locationName: sessionLocationName
         )
         transcriptStore.save(session)
     }

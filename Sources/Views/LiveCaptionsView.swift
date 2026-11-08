@@ -22,14 +22,13 @@ struct LiveCaptionsView: View {
             .frame(maxWidth: .infinity)
             .navigationTitle("实时字幕")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .softTopEdgeEffect()
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     clearButton
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    settingsMenu
+                    languageControls
                 }
             }
             .translationTask(source: sourceLanguage, target: targetLanguage) { session in
@@ -41,7 +40,7 @@ struct LiveCaptionsView: View {
         }
     }
 
-    // MARK: - 翻译会话（SwiftUI 注入，兼容 iOS 18+）
+    // MARK: - 翻译会话（由 SwiftUI translationTask 注入）
 
     private var sourceLanguage: Locale.Language {
         Locale.Language(identifier: settings.sourceLanguageIdentifier)
@@ -246,19 +245,17 @@ struct LiveCaptionsView: View {
                 if viewModel.isWaitingForBroadcast {
                     return "正在等待系统广播连接…请在系统弹窗中选择本 App"
                 }
-                let mode = settings.requiresOnDeviceRecognition ? "设备端识别" : "在线识别"
                 return viewModel.isLiveActivityActive
-                    ? "正在转写系统音频 · \(mode) · 灵动岛字幕已开启"
-                    : "正在转写系统音频 · \(mode)"
+                    ? "正在转写系统音频 · 设备端识别 · 灵动岛字幕已开启"
+                    : "正在转写系统音频 · 设备端识别"
             }
         }
 
         switch viewModel.state {
         case .listening:
-            let mode = settings.requiresOnDeviceRecognition ? "设备端识别" : "在线识别"
             return viewModel.isLiveActivityActive
-                ? "正在聆听 · \(mode) · 灵动岛字幕已开启"
-                : "正在聆听 · \(mode)"
+                ? "正在聆听 · 设备端识别 · 灵动岛字幕已开启"
+                : "正在聆听 · 设备端识别"
         case .idle:
             return "点击开始，麦克风将实时生成字幕"
         case .ended:
@@ -278,31 +275,47 @@ struct LiveCaptionsView: View {
         .accessibilityLabel("清空字幕")
     }
 
-    private var settingsMenu: some View {
+    /// 语言切换：源语言、目标语言各一个独立模块
+    private var languageControls: some View {
+        HStack(spacing: 4) {
+            sourceLanguageMenu
+            Image(systemName: "arrow.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            targetLanguageMenu
+        }
+    }
+
+    private var sourceLanguageMenu: some View {
         Menu {
             Picker("识别语言", selection: $settings.sourceLanguageIdentifier) {
                 ForEach(LanguageOption.all) { option in
                     Text(option.displayName).tag(option.identifier)
                 }
             }
+        } label: {
+            languageChip(LanguageOption.option(for: settings.sourceLanguageIdentifier).displayName)
+        }
+    }
+
+    private var targetLanguageMenu: some View {
+        Menu {
             Picker("翻译为", selection: $settings.targetLanguageIdentifier) {
                 ForEach(LanguageOption.all) { option in
                     Text(option.displayName).tag(option.identifier)
                 }
             }
         } label: {
-            Text(settingsLabel)
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
+            languageChip(LanguageOption.option(for: settings.targetLanguageIdentifier).displayName)
         }
     }
 
-    private var settingsLabel: String {
-        let source = LanguageOption.option(for: settings.sourceLanguageIdentifier).displayName
-        let target = LanguageOption.option(for: settings.targetLanguageIdentifier).displayName
-        return "\(shortName(source)) → \(shortName(target))"
+    private func languageChip(_ name: String) -> some View {
+        Text(shortName(name))
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.quaternary, in: Capsule())
     }
 
     private func shortName(_ name: String) -> String {

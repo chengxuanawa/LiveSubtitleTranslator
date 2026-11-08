@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// 设置页（精简版：不含 AI 配置）
 struct SettingsView: View {
@@ -13,12 +12,10 @@ struct SettingsView: View {
                 audioSourceSection
                 liveActivitySection
                 recordSection
-                permissionSection
                 aboutSection
             }
             .navigationTitle("设置")
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .softTopEdgeEffect()
         }
     }
 
@@ -26,11 +23,12 @@ struct SettingsView: View {
 
     private var recognitionSection: some View {
         Section {
-            Toggle("仅在本机识别（离线）", isOn: $settings.requiresOnDeviceRecognition)
+            LabeledContent("识别引擎", value: "Apple SpeechAnalyzer")
+            LabeledContent("运行方式", value: "本机识别（音频不上传）")
         } header: {
             Text("识别")
         } footer: {
-            Text("开启后语音不上传；语言不支持离线识别时请关闭。")
+            Text("iOS 26 起使用苹果新一代本机语音模型，自动断句、标点与上下文纠错；首次使用某语言时会自动下载对应模型。")
         }
     }
 
@@ -53,15 +51,23 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 灵动岛
+    // MARK: - 灵动岛与小窗口
 
     private var liveActivitySection: some View {
         Section {
-            Toggle("录制开始时自动开启灵动岛字幕", isOn: $settings.autoStartLiveActivity)
+            Picker("显示方式", selection: Binding(
+                get: { settings.visualMode.rawValue },
+                set: { settings.visualMode = VisualMode(rawValue: $0) ?? .auto }
+            )) {
+                ForEach(VisualMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode.rawValue)
+                }
+            }
+            Toggle("录制开始时自动开启字幕浮窗", isOn: $settings.autoStartLiveActivity)
         } header: {
-            Text("灵动岛 / 锁屏字幕")
+            Text("灵动岛与小窗口")
         } footer: {
-            Text("录制中也可点击按钮手动开启；需允许实时活动。")
+            Text("自动模式：有灵动岛的 iPhone 使用灵动岛，iPad 等机型默认使用画中画小窗口。")
         }
     }
 
@@ -80,17 +86,7 @@ struct SettingsView: View {
         } header: {
             Text("字幕记录")
         } footer: {
-            Text("「位置」显示首句字幕；「AI 标题」使用已有摘要首行，无摘要时显示时间。")
-        }
-    }
-
-    // MARK: - 权限
-
-    private var permissionSection: some View {
-        Section("权限") {
-            Link(destination: URL(string: UIApplication.openSettingsURLString)!) {
-                Label("打开应用权限设置", systemImage: "lock.shield")
-            }
+            Text("「位置」显示录制地点（需定位权限），无法定位时显示首句字幕；「AI 标题」使用已有摘要首行，无摘要时显示时间。")
         }
     }
 
