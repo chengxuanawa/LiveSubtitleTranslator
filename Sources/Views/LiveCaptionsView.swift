@@ -9,6 +9,11 @@ struct LiveCaptionsView: View {
 
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
 
+    /// 文字更新时的模糊过渡强度
+    @State private var textBlurRadius: CGFloat = 0
+    /// 彩色渐变的流动相位
+    @State private var gradientPhase: Double = 0
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -62,41 +67,48 @@ struct LiveCaptionsView: View {
 
     private var captionStage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(displayOriginal)
-                .font(.title3.weight(.semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .lineLimit(3)
-            if let translated = displayTranslation {
-                Text(translated)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            if viewModel.livePartialText.isEmpty {
+                if viewModel.state == .listening {
+                    Text("正在聆听…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                Text(viewModel.livePartialText)
+                    .font(.title3.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(3)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [.cyan, .blue, .purple, .pink],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .hueRotation(.degrees(gradientPhase))
+                    .blur(radius: textBlurRadius)
+                    .contentTransition(.opacity)
+                    .transition(.blurReplace)
+                    .onAppear {
+                        gradientPhase = 0
+                        withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
+                            gradientPhase = 360
+                        }
+                    }
+                    .onChange(of: viewModel.livePartialText) {
+                        // 新识别到的文字先带模糊出现，再快速清晰
+                        textBlurRadius = 6
+                        withAnimation(.easeOut(duration: 0.35)) {
+                            textBlurRadius = 0
+                        }
+                    }
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-        .animation(.easeInOut(duration: 0.3), value: viewModel.segments.count)
-        .animation(.easeInOut(duration: 0.3), value: viewModel.segments.last?.translatedText)
-    }
-
-    private var displayOriginal: String {
-        if !viewModel.livePartialText.isEmpty {
-            return viewModel.livePartialText
-        }
-        if let last = viewModel.segments.last {
-            return last.originalText
-        }
-        return ""
-    }
-
-    private var displayTranslation: String? {
-        guard settings.realtimeTranslationEnabled,
-              viewModel.livePartialText.isEmpty,
-              let last = viewModel.segments.last else { return nil }
-        return last.displayTranslatedText
+        .animation(.easeInOut(duration: 0.3), value: viewModel.livePartialText.isEmpty)
     }
 
     // MARK: - 分段记录
@@ -105,9 +117,13 @@ struct LiveCaptionsView: View {
         ScrollView {
             LazyVStack(spacing: 10) {
                 ForEach(viewModel.segments) { segment in
-                    CaptionSegmentRow(segment: segment) {
-                        polish(segment)
-                    }
+                    CaptionSegmentRow(
+                        segment: segment,
+                        showTranslationFailure: settings.realtimeTranslationEnabled
+                            && viewModel.failedTranslationIDs.contains(segment.id),
+                        onRetryTranslation: { viewModel.retryTranslation(for: segment) },
+                        onPolishRequest: { polish(segment) }
+                    )
                 }
             }
             .padding(.vertical, 12)
@@ -227,18 +243,24 @@ struct LiveCaptionsView: View {
         }
     }
 
-    /// 系统共享音频主按钮：自定义蓝色玻璃外观，底层用系统广播选择器接收点击
+    /// 系统共享音频主按钮：自定义蓝色玻璃外观，点击后程序化弹出系统广播选择器
     private var systemAudioButton: some View {
-        ZStack {
+        Button {
+            BroadcastPickerTrigger.shared.trigger()
+        } label: {
             Image(systemName: "dot.radiowaves.left.and.right")
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 56, height: 56)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Circle())
+        .background(
             BroadcastPickerView(preferredExtension: broadcastExtensionID)
                 .frame(width: 56, height: 56)
-                .opacity(0.02)
-        }
-        .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Circle())
+                .opacity(0.001)
+                .allowsHitTesting(false)
+        )
         .accessibilityLabel("开始系统广播")
     }
 
@@ -325,7 +347,6 @@ struct LiveCaptionsView: View {
     private var languageControls: some View {
         HStack(spacing: 2) {
             sourceLanguageMenu
-                .glassEffect(.regular.interactive(), in: Capsule())
             Image(systemName: "arrow.left.arrow.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -336,7 +357,6 @@ struct LiveCaptionsView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { swapLanguages() }
             targetLanguageMenu
-                .glassEffect(.regular.interactive(), in: Capsule())
         }
     }
 
@@ -377,7 +397,8 @@ struct LiveCaptionsView: View {
             .font(.subheadline.weight(.medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.quaternary, in: Capsule())
+            .glassEffect(.regular.interactive(), in: Capsule())
+            .contentShape(Capsule())
     }
 
     private func shortName(_ name: String) -> String {

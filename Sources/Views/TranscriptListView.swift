@@ -102,9 +102,10 @@ private struct TranscriptDetailView: View {
                     summaryCard(summary)
                 }
                 ForEach(session.segments) { segment in
-                    CaptionSegmentRow(segment: segment) {
-                        polish(segment)
-                    }
+                    CaptionSegmentRow(
+                        segment: segment,
+                        onPolishRequest: { polish(segment) }
+                    )
                 }
             }
             .padding(.vertical, 12)

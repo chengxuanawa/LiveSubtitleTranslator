@@ -4,6 +4,10 @@ import UIKit
 /// 单条字幕行：原文 + 译文（长按可拷贝 / AI 润色）
 struct CaptionSegmentRow: View {
     let segment: CaptionSegment
+    /// 译文生成失败时展示提示与重试按钮
+    var showTranslationFailure = false
+    /// 重试翻译回调
+    var onRetryTranslation: (() -> Void)? = nil
     /// 可选的 AI 润色回调；为 nil 时不显示润色按钮
     var onPolishRequest: (() -> Void)? = nil
 
@@ -22,6 +26,21 @@ struct CaptionSegmentRow: View {
                         .font(.subheadline)
                         .foregroundStyle(segment.polishedText == nil ? .secondary : .primary)
                 }
+            } else if showTranslationFailure {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                    Text("译文未生成")
+                    Button {
+                        onRetryTranslation?()
+                    } label: {
+                        Text("重试")
+                            .fontWeight(.medium)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -50,6 +69,12 @@ struct CaptionSegmentRow: View {
                             systemImage: "sparkles"
                         )
                     }
+                }
+            } else if showTranslationFailure, let onRetryTranslation {
+                Button {
+                    onRetryTranslation()
+                } label: {
+                    Label("重试翻译", systemImage: "arrow.clockwise")
                 }
             }
         }

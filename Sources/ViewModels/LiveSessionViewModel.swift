@@ -18,6 +18,8 @@ final class LiveSessionViewModel: ObservableObject {
 
     @Published private(set) var state: SessionState = .idle
     @Published private(set) var segments: [CaptionSegment] = []
+    /// 译文生成失败的片段（用于显示提示与重试按钮）
+    @Published private(set) var failedTranslationIDs: Set<UUID> = []
     @Published var livePartialText = ""
     @Published var errorMessage: String?
     /// 灵动岛字幕是否已开启（由用户手动触发或按设置自动开启）
@@ -168,6 +170,7 @@ final class LiveSessionViewModel: ObservableObject {
         guard state != .listening else { return }
         errorMessage = nil
         segments = []
+        failedTranslationIDs.removeAll()
         livePartialText = ""
         startNewSessionContext()
 
@@ -193,6 +196,7 @@ final class LiveSessionViewModel: ObservableObject {
 
         errorMessage = nil
         segments = []
+        failedTranslationIDs.removeAll()
         livePartialText = ""
         startNewSessionContext()
 
@@ -240,6 +244,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     func clearSegments() {
         segments = []
+        failedTranslationIDs.removeAll()
         livePartialText = ""
         sessionStart = Date()
     }
@@ -363,11 +368,41 @@ final class LiveSessionViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             let translated = await self.translationService.translate(text)
-            guard let translated,
-                  let index = self.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            guard let translated, !translated.isEmpty else {
+                self.failedTranslationIDs.insert(segmentID)
+                return
+            }
+            guard let index = self.segments.firstIndex(where: { $0.id == segmentID }) else { return }
             self.segments[index].translatedText = translated
+            self.failedTranslationIDs.remove(segmentID)
             self.updateVisuals(original: text, translated: translated)
             // 会话结束后仍有译文回填时，刷新已保存的记录
+            if self.state == .ended {
+                self.saveCurrentSession()
+            }
+        }
+    }
+
+    /// 手动重试某一条未生成译文的字幕
+    func retryTranslation(for segment: CaptionSegment) {
+        guard settings.realtimeTranslationEnabled else { return }
+        let segmentID = segment.id
+        failedTranslationIDs.remove(segmentID)
+
+        Task { [weak self] in
+            guard let self else { return }
+            let translated = await self.translationService.translate(segment.originalText)
+            guard let translated, !translated.isEmpty,
+                  let index = self.segments.firstIndex(where: { $0.id == segmentID }) else {
+                self.failedTranslationIDs.insert(segmentID)
+                return
+            }
+            self.segments[index].translatedText = translated
+            self.failedTranslationIDs.remove(segmentID)
+            // 只有最新一条需要同步到灵动岛 / 画中画
+            if self.segments.last?.id == segmentID {
+                self.updateVisuals(original: segment.originalText, translated: translated)
+            }
             if self.state == .ended {
                 self.saveCurrentSession()
             }

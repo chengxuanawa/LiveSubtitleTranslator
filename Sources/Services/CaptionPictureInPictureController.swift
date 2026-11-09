@@ -22,16 +22,32 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     }
 
     private let displayLayer = AVSampleBufferDisplayLayer()
+    private var contentSource: AVPictureInPictureController.ContentSource?
     private var pipController: AVPictureInPictureController?
     private var hostView: UIView?
     private var lastContent: (original: String, translated: String?)?
     /// 相对时间基准，用于给样本缓冲打时间戳
     private let playbackAnchor = CACurrentMediaTime()
+    /// 等待系统允许画中画后再启动
+    private var pendingStart = false
+    private var possibleObservation: NSKeyValueObservation?
 
     override init() {
         super.init()
         displayLayer.videoGravity = .resizeAspect
-        displayLayer.frame = CGRect(x: 0, y: 0, width: 2, height: 2)
+        // 样本缓冲显示层需要时间基准才能按时渲染，否则画中画里会是黑屏
+        var timebase: CMTimebase?
+        _ = CMTimebaseCreateWithSourceClock(kCFAllocatorDefault, CMClockGetHostTimeClock(), &timebase)
+        if let timebase {
+            displayLayer.controlTimebase = timebase
+            _ = CMTimebaseSetTime(timebase, time: .zero)
+            _ = CMTimebaseSetRate(timebase, rate: 1.0)
+        }
+    }
+
+    /// 内容源必须在显示层加入窗口后再创建，否则 iPhone 上可能永远无法进入画中画
+    private func ensureController() {
+        guard pipController == nil else { return }
         let source = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: displayLayer,
             playbackDelegate: self
@@ -39,7 +55,20 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         let controller = AVPictureInPictureController(contentSource: source)
         controller.delegate = self
         controller.requiresLinearPlayback = true
+        contentSource = source
         pipController = controller
+
+        // iPhone 上画中画允许启动的时机由系统异步决定，不能刚创建就强行启动
+        possibleObservation = controller.observe(\.isPictureInPicturePossible, options: [.new]) { [weak self, weak controller] _, _ in
+            Task { @MainActor [weak self, weak controller] in
+                guard let self,
+                      let controller,
+                      self.pendingStart,
+                      controller.isPictureInPicturePossible else { return }
+                self.pendingStart = false
+                controller.startPictureInPicture()
+            }
+        }
     }
 
     static var isSupported: Bool {
@@ -49,16 +78,34 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     /// 进入画中画；返回是否成功发起
     @discardableResult
     func start() -> Bool {
-        guard Self.isSupported, let pipController else { return false }
+        guard Self.isSupported else { return false }
+        // 已在等待系统允许或已经激活时，不重复发起
+        if pendingStart || pipController?.isPictureInPictureActive == true { return true }
         // 不再把音频会话切到 .playback：那会抢占麦克风，导致录音中开画中画时识别掉线
         attachToWindow()
+        ensureController()
+        guard let pipController else { return false }
         displayLayer.flush()
         render(original: lastContent?.original ?? "SubLingo", translated: lastContent?.translated)
-        pipController.startPictureInPicture()
-        return pipController.isPictureInPicturePossible
+
+        pendingStart = false
+        if pipController.isPictureInPicturePossible {
+            pipController.startPictureInPicture()
+        } else {
+            pendingStart = true
+            // 兜底：等系统状态回调用了一小段时间仍不可用，再尝试一次
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, self.pendingStart else { return }
+                self.pendingStart = false
+                self.pipController?.startPictureInPicture()
+            }
+        }
+        return true
     }
 
     func stop() {
+        pendingStart = false
         pipController?.stopPictureInPicture()
         hostView?.removeFromSuperview()
         hostView = nil
@@ -126,6 +173,13 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         if displayLayer.status == .failed {
             displayLayer.flush()
         }
+        // 实时字幕不需要等待时间戳，立即显示最新一帧
+        CMSetAttachment(
+            sampleBuffer,
+            key: kCMSampleAttachmentKey_DisplayImmediately,
+            value: kCFBooleanTrue,
+            attachmentMode: .shouldPropagate
+        )
         displayLayer.enqueue(sampleBuffer)
     }
 
@@ -134,6 +188,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         let height = Int(size.height)
         var pixelBuffer: CVPixelBuffer?
         let attributes: [CFString: Any] = [
+            // AVSampleBufferDisplayLayer 需要 IOSurface 支撑，否则画中画可能黑屏
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as [String: Any],
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
         ]
@@ -161,6 +217,9 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return nil }
+        // CGBitmapContext 原点在左下，翻转后视频帧才是正向
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         var formatDescription: CMVideoFormatDescription?
@@ -193,10 +252,11 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
         guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return }
-        let host = UIView(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
+        // 用整窗大小承载显示层并放到最底层，避免 2×2 的宿主视图导致画中画黑屏
+        let host = UIView(frame: window.bounds)
         host.isUserInteractionEnabled = false
         host.backgroundColor = .clear
-        window.addSubview(host)
+        window.insertSubview(host, at: 0)
         displayLayer.frame = host.bounds
         host.layer.addSublayer(displayLayer)
         hostView = host
