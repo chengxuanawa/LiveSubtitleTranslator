@@ -16,7 +16,12 @@ final class LiveSessionViewModel: ObservableObject {
 
     // MARK: - 对外状态
 
-    @Published private(set) var state: SessionState = .idle
+    @Published private(set) var state: SessionState = .idle {
+        didSet {
+            guard state != oldValue else { return }
+            refreshIdleTimer()
+        }
+    }
     @Published private(set) var segments: [CaptionSegment] = []
     /// 译文生成失败的片段（用于显示提示与重试按钮）
     @Published private(set) var failedTranslationIDs: Set<UUID> = []
@@ -126,6 +131,11 @@ final class LiveSessionViewModel: ObservableObject {
 
     var audioSourceMode: AudioSourceMode {
         settings.audioSourceMode
+    }
+
+    /// 识别期间按设置阻止屏幕自动熄灭；停止后立刻恢复系统自动息屏
+    func refreshIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = state == .listening && settings.keepScreenOnWhileRecognizing
     }
 
     // MARK: - 控制

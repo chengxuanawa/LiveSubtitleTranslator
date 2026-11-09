@@ -43,10 +43,14 @@ struct SettingsView: View {
         Section {
             LabeledContent("识别引擎", value: "Apple SpeechAnalyzer（设备端）")
             LabeledContent("运行方式", value: "仅本机（不可切换）")
+            Toggle("识别时保持屏幕常亮", isOn: Binding(
+                get: { settings.keepScreenOnWhileRecognizing },
+                set: { settings.keepScreenOnWhileRecognizing = $0 }
+            ))
         } header: {
             Text("识别")
         } footer: {
-            Text("iOS 26 的 SpeechAnalyzer 只提供设备端识别，苹果已不提供第三方云端语音识别路径；云端模型仅用于「AI 功能」中的自定义 AI API。")
+            Text("开启后，在实时字幕识别期间不会自动锁屏；停止识别立即恢复正常息屏。iOS 26 的 SpeechAnalyzer 只提供设备端识别，苹果已不提供第三方云端语音识别路径；云端模型仅用于「AI 功能」中的自定义 AI API。")
         }
     }
 
@@ -93,7 +97,7 @@ struct SettingsView: View {
         } header: {
             Text("灵动岛与小窗口")
         } footer: {
-            Text("自动模式：有灵动岛的 iPhone 使用灵动岛，iPad 等机型默认使用画中画小窗口。「长条」画中画更适合单行字幕。")
+            Text("自动模式：有灵动岛的 iPhone 使用灵动岛，iPad 等机型默认使用画中画小窗口。「长条」画中画更适合单行字幕；切换形状后需要重新开启一次画中画窗口。")
         }
     }
 

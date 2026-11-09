@@ -16,10 +16,11 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     /// 画中画窗口形状（默认 / 长条）
     var shape: PiPShape = .standard {
         didSet {
-            guard shape != oldValue, isActive else { return }
-            // 分辨率变化需要丢弃旧格式的缓冲，否则新画幅不会生效
-            displayLayer.flush()
-            render(original: lastContent?.original ?? "SubLingo", translated: lastContent?.translated)
+            guard shape != oldValue else { return }
+            // 窗口比例在会话创建时就定下来了，运行中无法改变；
+            // 关闭时销毁会话，下次开启即可按新形状创建
+            guard !isActive else { return }
+            teardownController()
         }
     }
 
@@ -113,8 +114,22 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     func stop() {
         pendingStart = false
         pipController?.stopPictureInPicture()
+        teardownController()
         hostView?.removeFromSuperview()
         hostView = nil
+        if isActive {
+            isActive = false
+            onStateChange?(false)
+        }
+    }
+
+    /// 销毁画中画会话：窗口比例与内容源绑定，重建后才能按新形状生效
+    private func teardownController() {
+        possibleObservation?.invalidate()
+        possibleObservation = nil
+        pipController?.delegate = nil
+        pipController = nil
+        contentSource = nil
     }
 
     /// 更新画中画内容（仅在画中画激活时渲染）
@@ -273,19 +288,22 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     }
 
     private func attachToWindow() {
-        guard hostView == nil else { return }
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap { $0.windows }
-        guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return }
-        // 用整窗大小承载显示层并放到最底层，避免 2×2 的宿主视图导致画中画黑屏
-        let host = UIView(frame: window.bounds)
-        host.isUserInteractionEnabled = false
-        host.backgroundColor = .clear
-        window.insertSubview(host, at: 0)
-        displayLayer.frame = host.bounds
-        host.layer.addSublayer(displayLayer)
-        hostView = host
+        if hostView == nil {
+            let windows = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+            guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return }
+            // 用整窗大小承载显示层并放到最底层，避免 2×2 的宿主视图导致画中画黑屏
+            let host = UIView(frame: window.bounds)
+            host.isUserInteractionEnabled = false
+            host.backgroundColor = .clear
+            window.insertSubview(host, at: 0)
+            host.layer.addSublayer(displayLayer)
+            hostView = host
+        }
+        // 必须在创建 ContentSource 之前把显示层调成目标画幅，
+        // 否则系统会按整窗（竖屏）比例锁定画中画窗口
+        fitDisplayLayer(to: shape.renderSize)
     }
 }
 
@@ -325,6 +343,8 @@ extension CaptionPictureInPictureController: AVPictureInPictureControllerDelegat
     func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
         isActive = false
         onStateChange?(false)
+        // 用户关闭窗口后销毁会话，下次开启按当前形状重建
+        teardownController()
     }
 
     nonisolated func pictureInPictureController(
@@ -332,8 +352,10 @@ extension CaptionPictureInPictureController: AVPictureInPictureControllerDelegat
         failedToStartPictureInPictureWithError error: Error
     ) {
         Task { @MainActor [weak self] in
-            self?.isActive = false
-            self?.onStateChange?(false)
+            guard let self else { return }
+            self.isActive = false
+            self.onStateChange?(false)
+            self.teardownController()
         }
     }
 }

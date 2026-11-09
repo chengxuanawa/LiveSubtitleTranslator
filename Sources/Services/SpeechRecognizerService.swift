@@ -35,7 +35,7 @@ extension SpeechRecognizing {
 /// 新版模型自带断句、标点与上下文纠错，段落由系统按语义切分，
 /// 不再依赖能量阈值或“静音多少秒”之类的启发式规则。
 @MainActor
-final class SpeechRecognizerService: ObservableObject, SpeechRecognizing {
+final class SpeechRecognizerService: SpeechRecognizing {
 
     // MARK: - 配置
 

@@ -30,20 +30,32 @@ struct LiveCaptionsView: View {
     @AppStorage("autoScrollLockSeconds") private var autoScrollLockSeconds: Double = 6
 
     var body: some View {
-        // 顶栏作为滚动视图的安全区插入视图：列表会滑到顶栏与状态栏下方，
-        // 再配合 soft 滚动边缘，内容在顶部区域柔和模糊，而不是硬切
-        segmentList
-            .safeAreaInset(edge: .top, spacing: 0) {
-                header
+        GeometryReader { proxy in
+            let isLandscape = proxy.size.width > proxy.size.height
+            Group {
+                if isLandscape {
+                    // 横屏双栏：左侧字幕记录，右侧实时字幕与悬浮控制，充分利用横向空间
+                    HStack(spacing: 0) {
+                        transcriptColumn(isLandscape: true)
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(width: 0.5)
+                        landscapeSidePanel
+                            .frame(width: min(380, max(300, proxy.size.width * 0.38)))
+                    }
+                    .safeAreaPadding(.bottom, 12)
+                } else {
+                    transcriptColumn(isLandscape: false)
+                        .safeAreaPadding(.bottom, 96)
+                        .overlay(alignment: .bottomTrailing) {
+                            floatingControls
+                                .padding(.trailing, 20)
+                                .padding(.bottom, 16)
+                        }
+                }
             }
-            .softTopEdgeEffect()
-            .safeAreaPadding(.bottom, 96)
-            .frame(maxWidth: 900)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: isLandscape ? .infinity : 900, maxHeight: .infinity)
             .background(Color(.systemBackground).ignoresSafeArea())
-            .overlay(alignment: .bottomTrailing) {
-                floatingControls
-            }
             .translationTask(source: sourceLanguage, target: targetLanguage) { session in
                 viewModel.attachTranslationSession(session)
             }
@@ -63,6 +75,42 @@ struct LiveCaptionsView: View {
             .onChange(of: viewModel.liveDisplayText) { _, newValue in
                 updateHighlightedText(newValue)
             }
+            .onChange(of: settings.keepScreenOnWhileRecognizing) { _, _ in
+                viewModel.refreshIdleTimer()
+            }
+        }
+    }
+
+    /// 字幕栏：顶栏作为滚动视图的安全区插入视图，列表会滑到顶栏与状态栏下方
+    private func transcriptColumn(isLandscape: Bool) -> some View {
+        segmentList(isLandscape: isLandscape)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                header
+            }
+            .softTopEdgeEffect()
+    }
+
+    /// 横屏右侧面板：实时识别气泡 + 悬浮控制
+    private var landscapeSidePanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView {
+                if !viewModel.liveDisplayText.isEmpty || viewModel.state == .listening {
+                    liveBubbleCore
+                } else {
+                    Text("尚未开始识别")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .defaultScrollAnchor(.bottom)
+            .scrollIndicators(.hidden)
+
+            floatingControls
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     // MARK: - 顶部标题栏
@@ -95,14 +143,28 @@ struct LiveCaptionsView: View {
 
     // MARK: - 实时字幕气泡（追加在列表底部）
 
-    /// 正在识别中的字幕气泡：与已生成气泡同样式，自动换行
+    /// 正在识别中的字幕气泡（列表中使用，左右留出与气泡相同的边距）
     private var liveBubble: some View {
+        liveBubbleCore
+            .padding(.horizontal, 12)
+    }
+
+    /// 正在识别中的字幕气泡本体：与已生成气泡同样式，自动换行
+    private var liveBubbleCore: some View {
         VStack(alignment: .leading, spacing: 6) {
             if stableText.isEmpty && newText.isEmpty {
-                Text("正在聆听…")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if viewModel.liveDisplayText.isEmpty {
+                    Text("正在聆听…")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    // 兜底：高亮状态尚未同步时直接显示完整文本，避免气泡空白
+                    Text(viewModel.liveDisplayText)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 ZStack(alignment: .topLeading) {
                     // 底层：已稳定文字正常显示，新增文字透明占位以保持排版
@@ -136,7 +198,6 @@ struct LiveCaptionsView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.horizontal, 12)
     }
 
     /// 只让最新新增的文字带彩色渐变和模糊，旧文字保持普通样式
@@ -233,7 +294,7 @@ struct LiveCaptionsView: View {
 
     // MARK: - 分段记录
 
-    private var segmentList: some View {
+    private func segmentList(isLandscape: Bool) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 10) {
@@ -286,7 +347,7 @@ struct LiveCaptionsView: View {
                     if autoScrollLocked, viewModel.state == .listening {
                         autoScrollLockControl(proxy)
                             .padding(.trailing, 8)
-                            .padding(.bottom, 120)
+                            .padding(.bottom, isLandscape ? 24 : 120)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
@@ -444,8 +505,6 @@ struct LiveCaptionsView: View {
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.state)
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)
         }
-        .padding(.trailing, 20)
-        .padding(.bottom, 16)
     }
 
     /// 音频来源切换：麦克风模式下显示红色圆点，系统共享音频模式下显示麦克风图标

@@ -35,10 +35,10 @@ struct CaptionSegmentRow: View {
         self.onRetryTranslation = onRetryTranslation
         self.onPolishRequest = onPolishRequest
         self.onReveal = onReveal
-        // 已播放过（含历史记录）直接以最终状态显示，不重播动画
-        let initialProgress: Double = segment.hasAnimated ? 1 : 0
-        _originalProgress = State(initialValue: initialProgress)
-        _translatedProgress = State(initialValue: initialProgress)
+        // 默认以最终状态显示：即使入场动画因列表复用、未出现在屏幕上而没有触发，
+        // 文字也不会停在透明状态（动画开始时再临时归零）
+        _originalProgress = State(initialValue: 1)
+        _translatedProgress = State(initialValue: 1)
     }
 
     var body: some View {
@@ -93,16 +93,22 @@ struct CaptionSegmentRow: View {
             // 只有首次出现且未播放过的气泡才播入场动画；流式追加不会重播
             guard !segment.hasAnimated, !didTriggerReveal else { return }
             didTriggerReveal = true
-            // 弹簧曲线带轻微回弹，配合上浮让文字显得轻盈而不是硬切
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
-                originalProgress = 1
-            }
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(0.13)) {
-                translatedProgress = 1
-            }
-            // 动画播完再回写标记，避免列表在动画首帧重算造成卡顿
+            // 从不可见状态开始播放入场；文本默认可见，动画被跳过时也能立即落到最终态
+            originalProgress = 0
+            translatedProgress = 0
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 720_000_000)
+                // 等一帧再开始，避免同帧写入被合并成无动画
+                try? await Task.sleep(nanoseconds: 16_000_000)
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
+                    originalProgress = 1
+                }
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(0.13)) {
+                    translatedProgress = 1
+                }
+                // 动画播完再回写标记，避免列表在动画首帧重算造成卡顿
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                if originalProgress < 1 { originalProgress = 1 }
+                if translatedProgress < 1 { translatedProgress = 1 }
                 onReveal?()
             }
         }

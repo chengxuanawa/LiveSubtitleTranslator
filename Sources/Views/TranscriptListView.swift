@@ -216,19 +216,97 @@ private struct TranscriptDetailView: View {
         }
     }
 
+    /// AI 摘要卡片：与对话气泡区分开——更大圆角、玻璃底、彩色描边与周围氛围光
     private func summaryCard(_ summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("AI 摘要", systemImage: "sparkles")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [.cyan, .purple, .pink],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Text("AI 摘要")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [.cyan, .blue, .purple, .pink],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                Spacer(minLength: 0)
+            }
+
             Text(summary)
                 .font(.subheadline)
+                .lineSpacing(3)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.cyan.opacity(0.16),
+                                Color.blue.opacity(0.10),
+                                Color.purple.opacity(0.16),
+                                Color.pink.opacity(0.12),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.cyan.opacity(0.75),
+                            Color.blue.opacity(0.35),
+                            Color.purple.opacity(0.6),
+                            Color.pink.opacity(0.75),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        }
+        // 氛围光：卡片四周柔和彩色光晕
+        .background {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.cyan.opacity(0.45),
+                            Color.blue.opacity(0.30),
+                            Color.purple.opacity(0.42),
+                            Color.pink.opacity(0.38),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .blur(radius: 26)
+                .opacity(0.55)
+                .padding(-8)
+        }
+        .shadow(color: Color.purple.opacity(0.18), radius: 16, x: 0, y: 8)
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
     }
 }
 

@@ -18,6 +18,8 @@ final class SettingsStore: ObservableObject {
     @AppStorage("pipShapeRaw") private var pipShapeRaw = PiPShape.standard.rawValue
     /// 是否开启实时翻译（录制中可通过主按钮左侧的玻璃按钮切换）
     @AppStorage("realtimeTranslationEnabled") var realtimeTranslationEnabled = true
+    /// 识别期间是否阻止屏幕自动熄灭
+    @AppStorage("keepScreenOnWhileRecognizing") private var keepScreenOnRaw = false
 
     // AI 底层配置保留（仅用于摘要数据兼容）
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue
@@ -48,6 +50,15 @@ final class SettingsStore: ObservableObject {
     var pipShape: PiPShape {
         get { PiPShape(rawValue: pipShapeRaw) ?? .standard }
         set { pipShapeRaw = newValue.rawValue }
+    }
+
+    /// 识别时保持屏幕常亮；切换后手动通知界面刷新
+    var keepScreenOnWhileRecognizing: Bool {
+        get { keepScreenOnRaw }
+        set {
+            keepScreenOnRaw = newValue
+            objectWillChange.send()
+        }
     }
 
     var isAPIConfigured: Bool {
