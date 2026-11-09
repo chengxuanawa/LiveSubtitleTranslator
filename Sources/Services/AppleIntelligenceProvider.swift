@@ -33,9 +33,9 @@ final class AppleIntelligenceProvider: TextAIProviding {
         return AITextSanitizer.plainText(response.content)
     }
 
-    func segment(_ text: String) async throws -> String? {
+    func segment(_ text: String, context: String?) async throws -> String? {
         let response = try await segmentationSessionValue().respond(
-            to: text,
+            to: AISegmentationPrompt.userMessage(text: text, context: context),
             options: GenerationOptions(temperature: 0.1)
         )
         return response.content
@@ -112,7 +112,7 @@ enum AppleIntelligenceSupport {
 final class AppleIntelligenceProvider: TextAIProviding {
     func summarize(_ text: String) async throws -> String? { nil }
     func polish(_ text: String, targetLanguage: String) async throws -> String? { nil }
-    func segment(_ text: String) async throws -> String? { nil }
+    func segment(_ text: String, context: String?) async throws -> String? { nil }
 }
 #endif
 

@@ -14,6 +14,8 @@ struct LiveCaptionsView: View {
 
     /// 已经逐字吐出的实时文本
     @State private var revealedText = ""
+    /// 末尾字符是否已结束渐显（没有新字后恢复完全清晰）
+    @State private var tailSettled = true
     /// 逐字吐字任务
     @State private var revealTask: Task<Void, Never>?
     /// 用户滑动列表时临时暂停自动滚动
@@ -54,6 +56,7 @@ struct LiveCaptionsView: View {
                 viewModel.prepareSystemAudioServer()
                 // 重新进入页面直接对齐当前文本，避免重放逐字动画
                 revealedText = viewModel.liveDisplayText
+                tailSettled = true
                 revealTask?.cancel()
                 revealTask = nil
             }
@@ -142,7 +145,7 @@ struct LiveCaptionsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                rainbowLiveText
+                liveRevealText
             }
 
             if settings.realtimeTranslationEnabled {
@@ -163,52 +166,13 @@ struct LiveCaptionsView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// 实时文字：普通文字 + 末词彩虹流光（Color 相位随时钟推进，形成真正的流动）
-    private var rainbowLiveText: some View {
-        let parts = rainbowParts(from: revealedText)
-        return TimelineView(.animation(minimumInterval: 0.14, paused: autoScrollLocked)) { context in
-            let cycle: Double = 2
-            let phase = context.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: cycle) / cycle
-            rainbowText(prefix: parts.prefix, tail: parts.tail, phase: phase)
-                .font(.body)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// 拆分出“最后一个词”：有空格按空格切词，中日韩等无空格语言取最后几个字
-    private func rainbowParts(from text: String) -> (prefix: String, tail: String) {
-        guard !text.isEmpty else { return ("", "") }
-        if let spaceIndex = text.lastIndex(of: " ") {
-            let cut = text.index(after: spaceIndex)
-            if cut < text.endIndex {
-                return (String(text[..<cut]), String(text[cut...]))
-            }
-        }
-        let tailCount = min(4, text.count)
-        let cut = text.index(text.endIndex, offsetBy: -tailCount)
-        return (String(text[..<cut]), String(text[cut...]))
-    }
-
-    private func rainbowText(prefix: String, tail: String, phase: Double) -> Text {
-        var attributed = AttributedString()
-        if !prefix.isEmpty {
-            var piece = AttributedString(prefix)
-            piece.foregroundColor = Color.primary
-            attributed.append(piece)
-        }
-        let characters = Array(tail)
-        for (index, character) in characters.enumerated() {
-            var piece = AttributedString(String(character))
-            let progress = characters.count > 1
-                ? Double(index) / Double(characters.count - 1)
-                : 1
-            let hue = (0.5 + 0.42 * progress + phase).truncatingRemainder(dividingBy: 1)
-            piece.foregroundColor = Color(hue: hue, saturation: 0.88, brightness: 0.98)
-            attributed.append(piece)
-        }
-        return Text(attributed)
+    /// 实时文字：末尾几个字符带模糊渐显，其余正常显示
+    private var liveRevealText: some View {
+        Text(revealedText)
+            .font(.body)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .textRenderer(TailFadeTextRenderer(fadeCount: tailSettled ? 0 : 3))
     }
 
     // MARK: - 逐字吐字
@@ -220,10 +184,12 @@ struct LiveCaptionsView: View {
             revealTask?.cancel()
             revealTask = nil
             revealedText = ""
+            tailSettled = true
             return
         }
         guard target.hasPrefix(revealedText) else {
             revealedText = target
+            tailSettled = true
             return
         }
         startRevealPumpIfNeeded()
@@ -237,6 +203,7 @@ struct LiveCaptionsView: View {
                 let target = viewModel.liveDisplayText
                 guard target.hasPrefix(revealedText) else {
                     revealedText = target
+                    tailSettled = true
                     break
                 }
                 let backlog = target.count - revealedText.count
@@ -244,13 +211,19 @@ struct LiveCaptionsView: View {
                 let step = backlog > 12 ? 3 : (backlog > 5 ? 2 : 1)
                 let end = target.index(target.startIndex, offsetBy: revealedText.count + step)
                 revealedText = String(target[..<end])
+                tailSettled = false
                 try? await Task.sleep(nanoseconds: 60_000_000)
             }
             revealTask = nil
             // 退出瞬间目标又变长时补一次，避免漏字
             if viewModel.liveDisplayText.count > revealedText.count {
                 startRevealPumpIfNeeded()
+                return
             }
+            // 没有新字后稍等片刻，再让末尾字符恢复完全清晰
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled, revealTask == nil else { return }
+            tailSettled = true
         }
     }
 
@@ -283,9 +256,6 @@ struct LiveCaptionsView: View {
                 .padding(.vertical, 12)
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            // 内容变高时由系统保持底部锚点：文字连续增长时偏移同步跟随，
-            // 不会像手动 scrollTo 那样一截一截地跳
-            .defaultScrollAnchor(autoScrollLocked ? nil : .bottom, for: .sizeChanges)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 8)
                     .onChanged { _ in
@@ -295,6 +265,14 @@ struct LiveCaptionsView: View {
             )
             .onAppear {
                 scrollToBottom(proxy, animated: false, force: true)
+            }
+            // 系统锚点在横屏/文字高频增长时不可靠，改为显式跟随：
+            // 实时文字每吐一个字、新字幕落库时都平滑贴底
+            .onChange(of: revealedText) { _, _ in
+                scrollToBottom(proxy, animated: true, duration: 0.12)
+            }
+            .onChange(of: viewModel.segments.count) { _, _ in
+                scrollToBottom(proxy, animated: true, duration: 0.22)
             }
             .onChange(of: viewModel.state) { _, state in
                 if state == .listening {
@@ -325,12 +303,17 @@ struct LiveCaptionsView: View {
         duration: Double = 0.25
     ) {
         guard force || !autoScrollLocked else { return }
-        if animated {
-            withAnimation(.easeInOut(duration: duration)) {
+        Task { @MainActor in
+            // 等这一轮文字布局完成再滚，否则会滚到增长前的位置
+            await Task.yield()
+            guard force || !autoScrollLocked else { return }
+            if animated {
+                withAnimation(.easeInOut(duration: duration)) {
+                    proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                }
+            } else {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
             }
-        } else {
-            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
         }
     }
 

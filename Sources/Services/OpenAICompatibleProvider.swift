@@ -31,8 +31,12 @@ final class OpenAICompatibleProvider: TextAIProviding {
         return AITextSanitizer.plainText(result ?? "")
     }
 
-    func segment(_ text: String) async throws -> String? {
-        try await chat(system: AISegmentationPrompt.system, user: text, temperature: 0.1)
+    func segment(_ text: String, context: String?) async throws -> String? {
+        try await chat(
+            system: AISegmentationPrompt.system,
+            user: AISegmentationPrompt.userMessage(text: text, context: context),
+            temperature: 0.1
+        )
     }
 
     // MARK: - 私有

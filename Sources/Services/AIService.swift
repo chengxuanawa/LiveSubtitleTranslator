@@ -79,10 +79,11 @@ final class AIService: ObservableObject {
     }
 
     /// AI 语义断句：返回按顺序排列的完整句子；模型改写原文时返回 nil
-    func segmentSentences(_ text: String) async -> [String]? {
+    /// - Parameter context: 前几段已确定字幕，仅用于理解语境
+    func segmentSentences(_ text: String, context: String? = nil) async -> [String]? {
         guard isAvailable else { return nil }
         guard let content = await run({ provider in
-            try await provider.segment(text)
+            try await provider.segment(text, context: context)
         }) else { return nil }
         return AISegmentationParser.lines(from: content, original: text)
     }

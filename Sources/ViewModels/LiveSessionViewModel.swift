@@ -84,6 +84,8 @@ final class LiveSessionViewModel: ObservableObject {
     private var segmentationRequestID = 0
     private var segmentationGeneration = UUID()
     private var isSegmentingPending = false
+    /// 已落库的最近几段字幕，作为 AI 分段的上下文
+    private var recentSegmentContext: [String] = []
 
     init(
         speechRecognizer: any SpeechRecognizing,
@@ -452,6 +454,10 @@ final class LiveSessionViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         let segment = CaptionSegment(originalText: trimmed, startTime: startTime)
         segments.append(segment)
+        recentSegmentContext.append(trimmed)
+        if recentSegmentContext.count > 3 {
+            recentSegmentContext.removeFirst(recentSegmentContext.count - 3)
+        }
         let segmentID = segment.id
         updateVisuals(original: trimmed, translated: nil)
 
@@ -488,9 +494,13 @@ final class LiveSessionViewModel: ObservableObject {
         segmentationRequestID += 1
         let requestID = segmentationRequestID
         let force = pendingText.count >= 120 || pendingChunks.count >= 4
+        // 已经以句末标点结束时立即整理；否则多等一会儿，
+        // 让后续碎片并进来，避免每句话都单独成段
+        let endsWithSentenceMark = pendingText.last.map { "。！？!?…".contains($0) } ?? false
+        let delay: UInt64 = endsWithSentenceMark ? 300_000_000 : 800_000_000
         segmentationTask = Task { [weak self] in
             if !force {
-                try? await Task.sleep(nanoseconds: 300_000_000)
+                try? await Task.sleep(nanoseconds: delay)
             }
             guard let self,
                   !Task.isCancelled,
@@ -513,7 +523,10 @@ final class LiveSessionViewModel: ObservableObject {
             return
         }
 
-        let sentences = await aiService.segmentSentences(original)
+        let sentences = await aiService.segmentSentences(
+            original,
+            context: recentSegmentContext.isEmpty ? nil : recentSegmentContext.joined(separator: "\n")
+        )
         guard generation == segmentationGeneration else {
             if !pendingChunks.isEmpty {
                 schedulePendingSegmentation()
@@ -561,6 +574,7 @@ final class LiveSessionViewModel: ObservableObject {
         segmentationGeneration = UUID()
         pendingChunks.removeAll()
         pendingText = ""
+        recentSegmentContext.removeAll()
     }
 
     /// AI 不可用或返回无效内容时，用本地标点做兜底切分

@@ -28,20 +28,34 @@ protocol TextAIProviding: AnyObject {
     /// 润色译文；targetLanguage 用于约束输出语言，禁止翻译成其他语言
     func polish(_ text: String, targetLanguage: String) async throws -> String?
     /// 只插入换行做语义断句，返回按行排列的原句，不改写原文
-    func segment(_ text: String) async throws -> String?
+    /// - Parameter context: 前几段已确定字幕，仅用于理解语境，不参与输出
+    func segment(_ text: String, context: String?) async throws -> String?
 }
 
-/// 断句提示词：仅允许插入换行，保证原文不被改写
+/// 断句提示词：仅允许插入换行，保证原文不被改写；支持带上下文理解
 enum AISegmentationPrompt {
     static let system = """
-    你负责为实时语音字幕做语义断句。用户会提供一段识别文本，请把它切成完整、自然的句子。
+    你负责为实时语音字幕做语义断句。用户会先给出一段「前文上下文」，再给出「待分段文本」。前文只用于理解语境，绝对不要输出前文。
 
     必须遵守：
-    1. 只能插入换行，不能增加、删除或修改任何文字、标点、数字。
+    1. 只能对待分段文本插入换行，不能增加、删除或修改任何文字、标点、数字。
     2. 每行输出一句，不要编号，不要解释，不要 Markdown 或引号。
-    3. 如果原文已经是一句完整的话，直接原样输出。
-    4. 所有行按顺序拼接后，必须与输入文本完全一致。
+    3. 待分段文本已经是一句完整的话时直接原样输出。
+    4. 所有行按顺序拼接后必须与「待分段文本」完全一致，不能包含任何前文内容。
+    5. 结合前文判断句子是否完整：当前文语义未结束时不要强行断句。
     """
+
+    /// 把上下文和待分段文本拼成一条用户消息
+    static func userMessage(text: String, context: String?) -> String {
+        guard let context, !context.isEmpty else { return text }
+        return """
+        前文上下文（仅供理解语境，不要输出、不要分段）：
+        \(context)
+
+        待分段文本（只对它分段）：
+        \(text)
+        """
+    }
 }
 
 /// 解析并校验断句结果；模型改动原文时返回 nil，交由本地规则兜底
