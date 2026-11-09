@@ -17,10 +17,22 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     var shape: PiPShape = .standard {
         didSet {
             guard shape != oldValue else { return }
-            // 窗口比例在会话创建时就定下来了，运行中无法改变；
-            // 关闭时销毁会话，下次开启即可按新形状创建
-            guard !isActive else { return }
-            teardownController()
+            guard isActive else {
+                // 窗口比例与内容源绑定，销毁会话让下次开启按新形状创建
+                teardownController()
+                return
+            }
+            // 运行中切换形状：退出后按新画幅自动重新开启，免去手动操作
+            let content = lastContent
+            stop()
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard let self, !self.isActive else { return }
+                _ = self.start()
+                if let content {
+                    self.update(original: content.original, translated: content.translated)
+                }
+            }
         }
     }
 

@@ -6,6 +6,8 @@ struct LiveCaptionsView: View {
     @EnvironmentObject private var viewModel: LiveSessionViewModel
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var aiService: AIService
+    /// 横屏兜底判断：部分情况下窗口尺寸更新滞后，紧凑高度也视为横屏
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
     private let bottomAnchorID = "transcript-bottom"
@@ -31,19 +33,18 @@ struct LiveCaptionsView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let isLandscape = proxy.size.width > proxy.size.height
+            let isLandscape = proxy.size.width > proxy.size.height || verticalSizeClass == .compact
             Group {
                 if isLandscape {
-                    // 横屏双栏：左侧字幕记录，右侧实时字幕与悬浮控制，充分利用横向空间
-                    HStack(spacing: 0) {
-                        transcriptColumn(isLandscape: true)
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.08))
-                            .frame(width: 0.5)
-                        landscapeSidePanel
-                            .frame(width: min(380, max(300, proxy.size.width * 0.38)))
-                    }
-                    .safeAreaPadding(.bottom, 12)
+                    // 横屏单栏铺满：实时文字本来就在列表底部更新，
+                    // 不再单独分栏；系统 Tab 栏在左下，悬浮按钮让到右下
+                    transcriptColumn(isLandscape: true)
+                        .safeAreaPadding(.bottom, 76)
+                        .overlay(alignment: .bottomTrailing) {
+                            floatingControls
+                                .padding(.trailing, 16)
+                                .padding(.bottom, 12)
+                        }
                 } else {
                     transcriptColumn(isLandscape: false)
                         .safeAreaPadding(.bottom, 96)
@@ -85,50 +86,43 @@ struct LiveCaptionsView: View {
     private func transcriptColumn(isLandscape: Bool) -> some View {
         segmentList(isLandscape: isLandscape)
             .safeAreaInset(edge: .top, spacing: 0) {
-                header
+                header(isLandscape: isLandscape)
             }
             .softTopEdgeEffect()
     }
 
-    /// 横屏右侧面板：实时识别气泡 + 悬浮控制
-    private var landscapeSidePanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ScrollView {
-                if !viewModel.liveDisplayText.isEmpty || viewModel.state == .listening {
-                    liveBubbleCore
-                } else {
-                    Text("尚未开始识别")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .defaultScrollAnchor(.bottom)
-            .scrollIndicators(.hidden)
-
-            floatingControls
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-    }
-
     // MARK: - 顶部标题栏
 
-    /// 左侧清空 + 标题，右侧语言胶囊（参考设计稿）
-    private var header: some View {
-        HStack(spacing: 12) {
-            clearButton
-            Text("实时字幕")
-                .font(.title3.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Spacer(minLength: 8)
-            languageControls
+    /// 左侧清空 + 标题，右侧语言胶囊（横屏时标题居中，与系统 Tab 栏的横屏样式统一）
+    private func header(isLandscape: Bool) -> some View {
+        Group {
+            if isLandscape {
+                ZStack {
+                    Text("实时字幕")
+                        .font(.title3.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    HStack(spacing: 12) {
+                        clearButton
+                        Spacer(minLength: 0)
+                        languageControls
+                    }
+                }
+            } else {
+                HStack(spacing: 12) {
+                    clearButton
+                    Text("实时字幕")
+                        .font(.title3.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 8)
+                    languageControls
+                }
+            }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
+        .padding(.top, isLandscape ? 2 : 6)
+        .padding(.bottom, isLandscape ? 4 : 8)
     }
 
     // MARK: - 翻译会话（由 SwiftUI translationTask 注入）
