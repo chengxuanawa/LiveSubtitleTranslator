@@ -112,6 +112,17 @@ struct CaptionSegmentRow: View {
                 onReveal?()
             }
         }
+        .onChange(of: segment.displayTranslatedText) { oldValue, newValue in
+            // 译文是异步回填的：首次出现时同样播一遍模糊 + 上浮动画
+            guard oldValue == nil, newValue != nil else { return }
+            translatedProgress = 0
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 16_000_000)
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
+                    translatedProgress = 1
+                }
+            }
+        }
         .contextMenu {
             Button {
                 UIPasteboard.general.string = segment.originalText

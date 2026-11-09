@@ -12,20 +12,10 @@ struct LiveCaptionsView: View {
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
     private let bottomAnchorID = "transcript-bottom"
 
-    /// 文字更新时的模糊过渡强度
-    @State private var textBlurRadius: CGFloat = 0
-    /// 已稳定文字（正常显示）
-    @State private var stableText = ""
-    /// 最新新增文字（彩色 + 模糊）
-    @State private var newText = ""
-    /// 上一次完整实时文本，用于计算新增部分
-    @State private var previousPartial = ""
-    /// 控制新增文字的模糊过渡动画
-    @State private var appearanceTask: Task<Void, Never>?
-    /// 上一次模糊过渡的触发时间（限制触发频率，避免文字持续发虚）
-    @State private var lastAppearancePulse = Date.distantPast
-    /// 彩色流光相位（用 GPU 动画驱动，避免逐帧重排文字）
-    @State private var gradientHue: Double = 0
+    /// 已经逐字吐出的实时文本
+    @State private var revealedText = ""
+    /// 逐字吐字任务
+    @State private var revealTask: Task<Void, Never>?
     /// 用户滑动列表时临时暂停自动滚动
     @State private var autoScrollLocked = false
     @State private var autoScrollUnlockTask: Task<Void, Never>?
@@ -62,22 +52,20 @@ struct LiveCaptionsView: View {
             }
             .onAppear {
                 viewModel.prepareSystemAudioServer()
-                // 重新进入页面时把已有实时文字当作普通文字，避免残留旧高亮
-                stableText = viewModel.liveDisplayText
-                newText = ""
-                previousPartial = viewModel.liveDisplayText
-                textBlurRadius = 0
-                // 彩色流光只启动一次，气泡内容切换时不会重置
-                gradientHue = 0
-                withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
-                    gradientHue = 360
-                }
+                // 重新进入页面直接对齐当前文本，避免重放逐字动画
+                revealedText = viewModel.liveDisplayText
+                revealTask?.cancel()
+                revealTask = nil
             }
-            .onChange(of: viewModel.liveDisplayText) { _, newValue in
-                updateHighlightedText(newValue)
+            .onChange(of: viewModel.liveDisplayText) { _, _ in
+                syncRevealedText()
             }
             .onChange(of: settings.keepScreenOnWhileRecognizing) { _, _ in
                 viewModel.refreshIdleTimer()
+            }
+            .onDisappear {
+                revealTask?.cancel()
+                revealTask = nil
             }
         }
     }
@@ -143,48 +131,29 @@ struct LiveCaptionsView: View {
             .padding(.horizontal, 12)
     }
 
-    /// 正在识别中的字幕气泡本体：与已生成气泡同样式，自动换行
+    /// 正在识别中的字幕气泡本体：逐字显示，最后一个词带彩虹流光
     private var liveBubbleCore: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if stableText.isEmpty && newText.isEmpty {
+            if revealedText.isEmpty {
                 if viewModel.liveDisplayText.isEmpty {
                     Text("正在聆听…")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    // 兜底：高亮状态尚未同步时直接显示完整文本，避免气泡空白
-                    Text(viewModel.liveDisplayText)
-                        .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                ZStack(alignment: .topLeading) {
-                    // 底层：已稳定文字正常显示，新增文字透明占位以保持排版
-                    liveTextLayer(hidingStable: false, hidingNew: true)
-                        .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                    // 顶层：仅新增文字彩色显示，色相随时间流动，旧文字透明占位
-                    liveTextLayer(hidingStable: true, hidingNew: false)
-                        .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .hueRotation(.degrees(gradientHue))
-                        .blur(radius: textBlurRadius)
-                }
+                rainbowLiveText
+            }
 
-                if settings.realtimeTranslationEnabled {
-                    HStack(alignment: .top, spacing: 8) {
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(Color.accentColor)
-                            .frame(width: 3)
-                            .padding(.top, 2)
-                        Text(viewModel.pendingText.isEmpty ? "断句后生成译文" : "AI 整理分段中…")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+            if settings.realtimeTranslationEnabled {
+                HStack(alignment: .top, spacing: 8) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Color.accentColor)
+                        .frame(width: 3)
+                        .padding(.top, 2)
+                    Text(viewModel.pendingText.isEmpty ? "断句后生成译文" : "AI 整理分段中…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -194,96 +163,95 @@ struct LiveCaptionsView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// 只让最新新增的文字带彩色渐变和模糊，旧文字保持普通样式
-    private func updateHighlightedText(_ text: String) {
-        guard !text.isEmpty else {
-            stableText = ""
-            newText = ""
-            previousPartial = ""
-            textBlurRadius = 0
-            appearanceTask?.cancel()
-            appearanceTask = nil
-            return
+    /// 实时文字：普通文字 + 末词彩虹流光（Color 相位随时钟推进，形成真正的流动）
+    private var rainbowLiveText: some View {
+        let parts = rainbowParts(from: revealedText)
+        return TimelineView(.animation(minimumInterval: 0.14, paused: autoScrollLocked)) { context in
+            let cycle: Double = 2
+            let phase = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: cycle) / cycle
+            rainbowText(prefix: parts.prefix, tail: parts.tail, phase: phase)
+                .font(.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         }
-
-        let common = commonPrefixLength(previousPartial, text)
-        stableText = String(text.prefix(common))
-        newText = String(text.dropFirst(common))
-        previousPartial = text
-
-        animateNewTextAppearance()
     }
 
-    private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
-        var count = 0
-        for (left, right) in zip(lhs, rhs) {
-            guard left == right else { break }
-            count += 1
-        }
-        return count
-    }
-
-    /// 新文字先带模糊出现，再用一帧后的动画快速变清晰；连续到达的文字共用一次过渡
-    private func animateNewTextAppearance() {
-        guard appearanceTask == nil,
-              Date().timeIntervalSince(lastAppearancePulse) > 0.6 else { return }
-        lastAppearancePulse = Date()
-        textBlurRadius = 5
-        appearanceTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 16_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.28)) {
-                textBlurRadius = 0
+    /// 拆分出“最后一个词”：有空格按空格切词，中日韩等无空格语言取最后几个字
+    private func rainbowParts(from text: String) -> (prefix: String, tail: String) {
+        guard !text.isEmpty else { return ("", "") }
+        if let spaceIndex = text.lastIndex(of: " ") {
+            let cut = text.index(after: spaceIndex)
+            if cut < text.endIndex {
+                return (String(text[..<cut]), String(text[cut...]))
             }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            appearanceTask = nil
         }
+        let tailCount = min(4, text.count)
+        let cut = text.index(text.endIndex, offsetBy: -tailCount)
+        return (String(text[..<cut]), String(text[cut...]))
     }
 
-    /// 两层文字使用完全相同的字符结构，保证叠加时排版一致；
-    /// 只给最后少量新增字符上色，控制每次刷新的字符串构建开销
-    private func liveTextLayer(hidingStable: Bool, hidingNew: Bool) -> Text {
+    private func rainbowText(prefix: String, tail: String, phase: Double) -> Text {
         var attributed = AttributedString()
-        if !stableText.isEmpty {
-            var piece = AttributedString(stableText)
-            piece.foregroundColor = hidingStable ? Color.clear : Color.primary
+        if !prefix.isEmpty {
+            var piece = AttributedString(prefix)
+            piece.foregroundColor = Color.primary
             attributed.append(piece)
         }
-
-        let newCharacters = Array(newText)
-        guard !newCharacters.isEmpty else { return Text(attributed) }
-
-        if hidingNew {
-            var piece = AttributedString(newText)
-            piece.foregroundColor = Color.clear
-            attributed.append(piece)
-            return Text(attributed)
-        }
-
-        // 超出彩色尾巴的字符由底层普通样式显示，顶层留空占位
-        let coloredTail = 24
-        let leading = max(0, newCharacters.count - coloredTail)
-        if leading > 0 {
-            var piece = AttributedString(String(newCharacters[0..<leading]))
-            piece.foregroundColor = Color.clear
-            attributed.append(piece)
-        }
-
-        let tail = newCharacters[leading...]
-        for (index, character) in tail.enumerated() {
+        let characters = Array(tail)
+        for (index, character) in characters.enumerated() {
             var piece = AttributedString(String(character))
-            let progress = tail.count > 1
-                ? Double(index) / Double(tail.count - 1)
-                : 0
-            piece.foregroundColor = Color(
-                hue: 0.5 + 0.45 * progress,
-                saturation: 0.85,
-                brightness: 0.95
-            )
+            let progress = characters.count > 1
+                ? Double(index) / Double(characters.count - 1)
+                : 1
+            let hue = (0.5 + 0.42 * progress + phase).truncatingRemainder(dividingBy: 1)
+            piece.foregroundColor = Color(hue: hue, saturation: 0.88, brightness: 0.98)
             attributed.append(piece)
         }
         return Text(attributed)
+    }
+
+    // MARK: - 逐字吐字
+
+    /// 识别文本变化时同步：识别结果被修正则直接对齐，否则启动逐字吐字
+    private func syncRevealedText() {
+        let target = viewModel.liveDisplayText
+        guard !target.isEmpty else {
+            revealTask?.cancel()
+            revealTask = nil
+            revealedText = ""
+            return
+        }
+        guard target.hasPrefix(revealedText) else {
+            revealedText = target
+            return
+        }
+        startRevealPumpIfNeeded()
+    }
+
+    /// 每 60ms 吐一个字；积压较多时一次多吐几个追上识别速度
+    private func startRevealPumpIfNeeded() {
+        guard revealTask == nil else { return }
+        revealTask = Task { @MainActor in
+            while !Task.isCancelled {
+                let target = viewModel.liveDisplayText
+                guard target.hasPrefix(revealedText) else {
+                    revealedText = target
+                    break
+                }
+                let backlog = target.count - revealedText.count
+                guard backlog > 0 else { break }
+                let step = backlog > 12 ? 3 : (backlog > 5 ? 2 : 1)
+                let end = target.index(target.startIndex, offsetBy: revealedText.count + step)
+                revealedText = String(target[..<end])
+                try? await Task.sleep(nanoseconds: 60_000_000)
+            }
+            revealTask = nil
+            // 退出瞬间目标又变长时补一次，避免漏字
+            if viewModel.liveDisplayText.count > revealedText.count {
+                startRevealPumpIfNeeded()
+            }
+        }
     }
 
     // MARK: - 分段记录
