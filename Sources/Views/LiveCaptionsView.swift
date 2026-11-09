@@ -8,16 +8,22 @@ struct LiveCaptionsView: View {
     @EnvironmentObject private var aiService: AIService
 
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
+    private let bottomAnchorID = "transcript-bottom"
 
     /// 文字更新时的模糊过渡强度
     @State private var textBlurRadius: CGFloat = 0
-    /// 彩色渐变的流动相位
-    @State private var gradientPhase: Double = 0
+    /// 已稳定文字（正常显示）
+    @State private var stableText = ""
+    /// 最新新增文字（彩色 + 模糊）
+    @State private var newText = ""
+    /// 上一次完整实时文本，用于计算新增部分
+    @State private var previousPartial = ""
+    /// 停顿后把新增文字转为普通样式
+    @State private var settleTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            captionStage
             segmentList
         }
         .safeAreaPadding(.bottom, 96)
@@ -32,6 +38,14 @@ struct LiveCaptionsView: View {
         }
         .onAppear {
             viewModel.prepareSystemAudioServer()
+            // 重新进入页面时把已有实时文字当作普通文字，避免残留旧高亮
+            stableText = viewModel.livePartialText
+            newText = ""
+            previousPartial = viewModel.livePartialText
+            textBlurRadius = 0
+        }
+        .onChange(of: viewModel.livePartialText) { _, newValue in
+            updateHighlightedText(newValue)
         }
     }
 
@@ -63,70 +77,180 @@ struct LiveCaptionsView: View {
         Locale.Language(identifier: settings.targetLanguageIdentifier)
     }
 
-    // MARK: - 顶部大字幕
+    // MARK: - 实时字幕气泡（追加在列表底部）
 
-    private var captionStage: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if viewModel.livePartialText.isEmpty {
-                if viewModel.state == .listening {
-                    Text("正在聆听…")
+    /// 正在识别中的字幕气泡：与已生成气泡同样式，自动换行
+    private var liveBubble: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .topLeading) {
+                // 底层：已稳定文字正常显示，新增文字透明占位以保持排版
+                liveTextLayer(hidingStable: false, hidingNew: true)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                // 顶层：仅新增文字彩色显示并做模糊，旧文字透明占位
+                liveTextLayer(hidingStable: true, hidingNew: false)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .blur(radius: textBlurRadius)
+            }
+
+            if settings.realtimeTranslationEnabled {
+                HStack(alignment: .top, spacing: 8) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Color.accentColor)
+                        .frame(width: 3)
+                        .padding(.top, 2)
+                    Text("断句后生成译文")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else {
-                Text(viewModel.livePartialText)
-                    .font(.title3.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(3)
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.cyan, .blue, .purple, .pink],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .hueRotation(.degrees(gradientPhase))
-                    .blur(radius: textBlurRadius)
-                    .contentTransition(.opacity)
-                    .transition(.blurReplace)
-                    .onAppear {
-                        gradientPhase = 0
-                        withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
-                            gradientPhase = 360
-                        }
-                    }
-                    .onChange(of: viewModel.livePartialText) {
-                        // 新识别到的文字先带模糊出现，再快速清晰
-                        textBlurRadius = 6
-                        withAnimation(.easeOut(duration: 0.35)) {
-                            textBlurRadius = 0
-                        }
-                    }
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-        .animation(.easeInOut(duration: 0.3), value: viewModel.livePartialText.isEmpty)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 12)
+        .transition(.blurReplace)
+    }
+
+    private var listeningPlaceholder: some View {
+        Text("正在聆听…")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 26)
+    }
+
+    /// 只让最新新增的文字带彩色渐变和模糊，旧文字保持普通样式
+    private func updateHighlightedText(_ text: String) {
+        guard !text.isEmpty else {
+            stableText = ""
+            newText = ""
+            previousPartial = ""
+            textBlurRadius = 0
+            settleTask?.cancel()
+            settleTask = nil
+            return
+        }
+
+        let common = commonPrefixLength(previousPartial, text)
+        stableText = String(text.prefix(common))
+        newText = String(text.dropFirst(common))
+        previousPartial = text
+
+        textBlurRadius = 6
+        withAnimation(.easeOut(duration: 0.35)) {
+            textBlurRadius = 0
+        }
+        scheduleSettle(fullText: text)
+    }
+
+    private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
+        var count = 0
+        for (left, right) in zip(lhs, rhs) {
+            guard left == right else { break }
+            count += 1
+        }
+        return count
+    }
+
+    /// 停顿后把最后一段新增文字也转为普通样式
+    private func scheduleSettle(fullText: String) {
+        settleTask?.cancel()
+        settleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, viewModel.livePartialText == fullText else { return }
+            withAnimation(.easeOut(duration: 0.3)) {
+                stableText = fullText
+                newText = ""
+            }
+        }
+    }
+
+    /// 两层文字使用完全相同的字符与 run 结构，保证叠加时排版一致
+    private func liveTextLayer(hidingStable: Bool, hidingNew: Bool) -> Text {
+        var attributed = AttributedString()
+        for character in stableText {
+            var piece = AttributedString(String(character))
+            piece.foregroundColor = hidingStable ? Color.clear : Color.primary
+            attributed.append(piece)
+        }
+        let newCharacters = Array(newText)
+        for (index, character) in newCharacters.enumerated() {
+            var piece = AttributedString(String(character))
+            if hidingNew {
+                piece.foregroundColor = Color.clear
+            } else {
+                let progress = newCharacters.count > 1
+                    ? Double(index) / Double(newCharacters.count - 1)
+                    : 0
+                piece.foregroundColor = Color(
+                    hue: 0.5 + 0.45 * progress,
+                    saturation: 0.85,
+                    brightness: 0.95
+                )
+            }
+            attributed.append(piece)
+        }
+        return Text(attributed)
     }
 
     // MARK: - 分段记录
 
     private var segmentList: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(viewModel.segments) { segment in
-                    CaptionSegmentRow(
-                        segment: segment,
-                        showTranslationFailure: settings.realtimeTranslationEnabled
-                            && viewModel.failedTranslationIDs.contains(segment.id),
-                        onRetryTranslation: { viewModel.retryTranslation(for: segment) },
-                        onPolishRequest: { polish(segment) }
-                    )
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(viewModel.segments) { segment in
+                        CaptionSegmentRow(
+                            segment: segment,
+                            showTranslationFailure: settings.realtimeTranslationEnabled
+                                && viewModel.failedTranslationIDs.contains(segment.id),
+                            onRetryTranslation: { viewModel.retryTranslation(for: segment) },
+                            onPolishRequest: { polish(segment) }
+                        )
+                        .id(segment.id)
+                    }
+
+                    if !viewModel.livePartialText.isEmpty {
+                        liveBubble
+                    } else if viewModel.state == .listening {
+                        listeningPlaceholder
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomAnchorID)
                 }
+                .padding(.vertical, 12)
+                .animation(.easeInOut(duration: 0.25), value: viewModel.livePartialText.isEmpty)
             }
-            .padding(.vertical, 12)
+            .onAppear {
+                scrollToBottom(proxy, animated: false)
+            }
+            .onChange(of: viewModel.segments.count) { _, _ in
+                scrollToBottom(proxy, animated: true)
+            }
+            .onChange(of: viewModel.livePartialText) { _, text in
+                guard !text.isEmpty else { return }
+                scrollToBottom(proxy, animated: true)
+            }
+            .onChange(of: viewModel.state) { _, _ in
+                scrollToBottom(proxy, animated: true)
+            }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
         }
     }
 

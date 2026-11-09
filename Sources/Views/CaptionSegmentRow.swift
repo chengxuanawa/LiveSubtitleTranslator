@@ -15,6 +15,7 @@ struct CaptionSegmentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(segment.originalText)
                 .font(.body)
+                .fixedSize(horizontal: false, vertical: true)
 
             if let translated = segment.displayTranslatedText {
                 HStack(alignment: .top, spacing: 8) {
@@ -25,6 +26,8 @@ struct CaptionSegmentRow: View {
                     Text(translated)
                         .font(.subheadline)
                         .foregroundStyle(segment.polishedText == nil ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else if showTranslationFailure {
                 HStack(spacing: 6) {
