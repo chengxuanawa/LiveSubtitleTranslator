@@ -37,7 +37,11 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         displayLayer.videoGravity = .resizeAspect
         // 样本缓冲显示层需要时间基准才能按时渲染，否则画中画里会是黑屏
         var timebase: CMTimebase?
-        _ = CMTimebaseCreateWithSourceClock(kCFAllocatorDefault, CMClockGetHostTimeClock(), &timebase)
+        _ = CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &timebase
+        )
         if let timebase {
             displayLayer.controlTimebase = timebase
             _ = CMTimebaseSetTime(timebase, time: .zero)
@@ -178,7 +182,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             sampleBuffer,
             key: kCMSampleAttachmentKey_DisplayImmediately,
             value: kCFBooleanTrue,
-            attachmentMode: .shouldPropagate
+            attachmentMode: kCMAttachmentMode_ShouldPropagate
         )
         displayLayer.enqueue(sampleBuffer)
     }
@@ -301,11 +305,13 @@ extension CaptionPictureInPictureController: AVPictureInPictureControllerDelegat
         onStateChange?(false)
     }
 
-    func pictureInPictureController(
+    nonisolated func pictureInPictureController(
         _ controller: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
-        isActive = false
-        onStateChange?(false)
+        Task { @MainActor [weak self] in
+            self?.isActive = false
+            self?.onStateChange?(false)
+        }
     }
 }
