@@ -146,6 +146,9 @@ struct LiveCaptionsView: View {
                 }
             } else {
                 liveRevealText
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if settings.realtimeTranslationEnabled {
@@ -166,13 +169,26 @@ struct LiveCaptionsView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// 实时文字：末尾几个字符带模糊渐显，其余正常显示
-    private var liveRevealText: some View {
-        Text(revealedText)
-            .font(.body)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .textRenderer(TailFadeTextRenderer(fadeCount: tailSettled ? 0 : 3))
+    /// 实时文字：末尾几个字符用透明度渐变淡入，其余保持正常清晰
+    private var liveRevealText: Text {
+        let characters = Array(revealedText)
+        guard !characters.isEmpty else { return Text("") }
+
+        let fadeCount = tailSettled ? 0 : 3
+        let fadeStart = max(0, characters.count - fadeCount)
+        var attributed = AttributedString()
+        if fadeStart > 0 {
+            var piece = AttributedString(String(characters[0..<fadeStart]))
+            piece.foregroundColor = Color.primary
+            attributed.append(piece)
+        }
+        for index in fadeStart..<characters.count {
+            let step = Double(index - fadeStart + 1) / Double(max(1, characters.count - fadeStart))
+            var piece = AttributedString(String(characters[index]))
+            piece.foregroundColor = Color.primary.opacity(0.35 + 0.65 * step)
+            attributed.append(piece)
+        }
+        return Text(attributed)
     }
 
     // MARK: - 逐字吐字
