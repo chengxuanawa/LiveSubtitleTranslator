@@ -221,9 +221,10 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return nil }
-        // CGBitmapContext 原点在左下，翻转后视频帧才是正向
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
+        // CGBitmapContext 原点在左下；画中画实际显示时整体是 180° 旋转的，
+        // 这里用水平翻转抵消，最终文字方向才是正的
+        context.translateBy(x: CGFloat(width), y: 0)
+        context.scaleBy(x: -1, y: 1)
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         var formatDescription: CMVideoFormatDescription?

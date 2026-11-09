@@ -11,6 +11,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
 
     private var summarizeSession: LanguageModelSession?
     private var polishSession: LanguageModelSession?
+    private var segmentationSession: LanguageModelSession?
 
     func summarize(_ text: String) async throws -> String? {
         let response = try await summarizeSessionValue().respond(
@@ -20,12 +21,24 @@ final class AppleIntelligenceProvider: TextAIProviding {
         return AITextSanitizer.plainText(response.content)
     }
 
-    func polish(_ text: String) async throws -> String? {
+    func polish(_ text: String, targetLanguage: String) async throws -> String? {
         let response = try await polishSessionValue().respond(
-            to: "请把下面的翻译改写得更自然、更口语化。保持原意，只输出改写后的译文：\n\n\(text)",
+            to: """
+            目标语言是\(targetLanguage)。下面这段文本已经是目标语言的译文，请保持\(targetLanguage)不变，
+            只把表达改得更自然、口语化。严禁翻译成其他语言，严禁改写回原始语言：
+            \(text)
+            """,
             options: GenerationOptions(temperature: 0.4)
         )
         return AITextSanitizer.plainText(response.content)
+    }
+
+    func segment(_ text: String) async throws -> String? {
+        let response = try await segmentationSessionValue().respond(
+            to: text,
+            options: GenerationOptions(temperature: 0.1)
+        )
+        return response.content
     }
 
     // MARK: - 私有
@@ -46,12 +59,26 @@ final class AppleIntelligenceProvider: TextAIProviding {
         if let polishSession { return polishSession }
         let session = LanguageModelSession(
             instructions: Instructions {
-                "你是翻译校对助手，负责把直译的句子改写得更自然、口语化，符合目标语言习惯。"
-                "保持原意不变，只改进表达。只输出改写后的纯文本：不要引号、不要星号或任何格式符号。"
+                "你是译文润色助手。输入文本已经是目标语言的译文。"
+                "只改进表达，使其自然、口语化，必须保持输入文本的语言不变。"
+                "绝对不要把译文翻译成其他语言，也不要把译文改写回原始语言。"
+                "只输出润色后的纯文本：不要解释、引号、星号或任何格式符号。"
             }
         )
         session.prewarm()
         polishSession = session
+        return session
+    }
+
+    private func segmentationSessionValue() throws -> LanguageModelSession {
+        if let segmentationSession { return segmentationSession }
+        let session = LanguageModelSession(
+            instructions: Instructions {
+                AISegmentationPrompt.system
+            }
+        )
+        session.prewarm()
+        segmentationSession = session
         return session
     }
 }
@@ -84,7 +111,8 @@ enum AppleIntelligenceSupport {
 @MainActor
 final class AppleIntelligenceProvider: TextAIProviding {
     func summarize(_ text: String) async throws -> String? { nil }
-    func polish(_ text: String) async throws -> String? { nil }
+    func polish(_ text: String, targetLanguage: String) async throws -> String? { nil }
+    func segment(_ text: String) async throws -> String? { nil }
 }
 #endif
 

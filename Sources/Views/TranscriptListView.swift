@@ -104,6 +104,7 @@ private struct TranscriptDetailView: View {
                 ForEach(session.segments) { segment in
                     CaptionSegmentRow(
                         segment: segment,
+                        showsPolishedHighlight: true,
                         onPolishRequest: { polish(segment) }
                     )
                 }
@@ -157,7 +158,10 @@ private struct TranscriptDetailView: View {
     private func polish(_ segment: CaptionSegment) {
         guard let index = session.segments.firstIndex(where: { $0.id == segment.id }) else { return }
         Task {
-            guard let polished = await aiService.polish(segment: segment) else { return }
+            guard let polished = await aiService.polish(
+                segment: segment,
+                targetLanguage: session.targetLanguageIdentifier
+            ) else { return }
             session.segments[index].polishedText = polished
             store.save(session)
         }

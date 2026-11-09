@@ -21,7 +21,14 @@ final class LiveSessionViewModel: ObservableObject {
     /// 译文生成失败的片段（用于显示提示与重试按钮）
     @Published private(set) var failedTranslationIDs: Set<UUID> = []
     @Published var livePartialText = ""
+    /// 等待 AI 整理分段的已识别文本（实时气泡会继续展示）
+    @Published private(set) var pendingText = ""
     @Published var errorMessage: String?
+
+    /// 实时气泡展示的完整文本：待整理片段 + 当前实时部分
+    var liveDisplayText: String {
+        pendingText + livePartialText
+    }
     /// 灵动岛字幕是否已开启（由用户手动触发或按设置自动开启）
     @Published private(set) var isLiveActivityActive = false
     /// 系统音频模式下是否正在等待广播连接
@@ -55,6 +62,19 @@ final class LiveSessionViewModel: ObservableObject {
     /// 本次录制自动生成的 AI 摘要（用于「AI 标题」）
     private var sessionSummary: String?
     private var locationTask: Task<Void, Never>?
+
+    // MARK: - AI 分段缓冲
+
+    private struct PendingSpeechChunk {
+        let text: String
+        let startTime: TimeInterval
+    }
+
+    private var pendingChunks: [PendingSpeechChunk] = []
+    private var segmentationTask: Task<Void, Never>?
+    private var segmentationRequestID = 0
+    private var segmentationGeneration = UUID()
+    private var isSegmentingPending = false
 
     init(
         speechRecognizer: any SpeechRecognizing,
@@ -172,6 +192,7 @@ final class LiveSessionViewModel: ObservableObject {
         segments = []
         failedTranslationIDs.removeAll()
         livePartialText = ""
+        resetPendingBuffer()
         startNewSessionContext()
 
         await translationService.setLanguagePair(
@@ -198,6 +219,7 @@ final class LiveSessionViewModel: ObservableObject {
         segments = []
         failedTranslationIDs.removeAll()
         livePartialText = ""
+        resetPendingBuffer()
         startNewSessionContext()
 
         speechRecognizer.locale = Locale(identifier: sourceIdentifier)
@@ -230,6 +252,8 @@ final class LiveSessionViewModel: ObservableObject {
 
     func stop() {
         speechRecognizer.stop()
+        // 结束前把还没被 AI 整理的片段直接落库，避免丢失
+        flushPendingBuffer()
         livePartialText = ""
         liveActivity.end()
         keepAlive.stop()
@@ -243,6 +267,7 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     func clearSegments() {
+        resetPendingBuffer()
         segments = []
         failedTranslationIDs.removeAll()
         livePartialText = ""
@@ -331,6 +356,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     private func handleError(_ message: String) {
         errorMessage = message
+        flushPendingBuffer()
         state = .ended
         liveActivity.end()
         keepAlive.stop()
@@ -354,20 +380,37 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     private func handleFinalSegment(_ text: String, startTime: TimeInterval) {
-        // 一句结束：清空实时预览，顶部切换到该句的原文并等待译文回填
+        // 一句结束：先清空实时预览；有 AI 时先进入缓冲，停顿后整理成完整句子
         livePartialText = ""
-        let segment = CaptionSegment(originalText: text, startTime: startTime)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // AI 不可用时保持原来的即时落库
+        guard aiService.isAvailable else {
+            appendCommittedSegment(trimmed, startTime: startTime)
+            return
+        }
+
+        pendingChunks.append(PendingSpeechChunk(text: trimmed, startTime: startTime))
+        pendingText = pendingChunks.map(\.text).joined()
+        updateVisuals(original: trimmed, translated: nil)
+        schedulePendingSegmentation()
+    }
+
+    /// 把最终确定的句子落库，并异步回填译文
+    private func appendCommittedSegment(_ text: String, startTime: TimeInterval) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let segment = CaptionSegment(originalText: trimmed, startTime: startTime)
         segments.append(segment)
         let segmentID = segment.id
-        updateVisuals(original: text, translated: nil)
+        updateVisuals(original: trimmed, translated: nil)
 
-        // 关闭实时翻译时只保留原文，不再请求译文
         guard settings.realtimeTranslationEnabled else { return }
 
-        // 异步翻译，完成后回填对应片段
         Task { [weak self] in
             guard let self else { return }
-            let translated = await self.translationService.translate(text)
+            let translated = await self.translationService.translate(trimmed)
             guard let translated, !translated.isEmpty else {
                 self.failedTranslationIDs.insert(segmentID)
                 return
@@ -375,12 +418,147 @@ final class LiveSessionViewModel: ObservableObject {
             guard let index = self.segments.firstIndex(where: { $0.id == segmentID }) else { return }
             self.segments[index].translatedText = translated
             self.failedTranslationIDs.remove(segmentID)
-            self.updateVisuals(original: text, translated: translated)
+            self.updateVisuals(original: trimmed, translated: translated)
             // 会话结束后仍有译文回填时，刷新已保存的记录
             if self.state == .ended {
                 self.saveCurrentSession()
             }
         }
+    }
+
+    // MARK: - AI 分段
+
+    /// 停顿约 1 秒后交给 AI 合并/切分；缓冲过长时立即整理
+    private func schedulePendingSegmentation() {
+        guard !pendingChunks.isEmpty else { return }
+        guard aiService.isAvailable else {
+            flushPendingBuffer()
+            return
+        }
+
+        segmentationRequestID += 1
+        let requestID = segmentationRequestID
+        let force = pendingText.count >= 120 || pendingChunks.count >= 4
+        segmentationTask = Task { [weak self] in
+            if !force {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.segmentationRequestID == requestID else { return }
+            await self.segmentAndCommitPending()
+        }
+    }
+
+    private func segmentAndCommitPending() async {
+        guard !isSegmentingPending, !pendingChunks.isEmpty else { return }
+        isSegmentingPending = true
+        defer { isSegmentingPending = false }
+
+        let generation = segmentationGeneration
+        let chunks = pendingChunks
+        let original = chunks.map(\.text).joined()
+        guard !original.isEmpty else {
+            pendingChunks.removeAll()
+            pendingText = ""
+            return
+        }
+
+        let sentences = await aiService.segmentSentences(original)
+        guard generation == segmentationGeneration else {
+            if !pendingChunks.isEmpty {
+                schedulePendingSegmentation()
+            }
+            return
+        }
+
+        // 只移除本次已处理的片段；AI 处理期间新到的片段继续保留
+        let processedCount = min(chunks.count, pendingChunks.count)
+        pendingChunks.removeFirst(processedCount)
+        pendingText = pendingChunks.map(\.text).joined()
+
+        let finalSentences = sentences ?? Self.fallbackSegments(for: original)
+        let times = startTimes(for: finalSentences, chunks: chunks)
+        for (index, sentence) in finalSentences.enumerated() {
+            let time = times.indices.contains(index) ? times[index] : (chunks.first?.startTime ?? 0)
+            appendCommittedSegment(sentence, startTime: time)
+        }
+
+        if !pendingChunks.isEmpty {
+            schedulePendingSegmentation()
+        }
+    }
+
+    /// 结束或清空时直接按标点兜底落库，避免 AI 未返回导致字幕丢失
+    private func flushPendingBuffer() {
+        segmentationRequestID += 1
+        segmentationGeneration = UUID()
+        let chunks = pendingChunks
+        pendingChunks.removeAll()
+        pendingText = ""
+        guard !chunks.isEmpty else { return }
+
+        let original = chunks.map(\.text).joined()
+        let sentences = Self.fallbackSegments(for: original)
+        let times = startTimes(for: sentences, chunks: chunks)
+        for (index, sentence) in sentences.enumerated() {
+            let time = times.indices.contains(index) ? times[index] : (chunks.first?.startTime ?? 0)
+            appendCommittedSegment(sentence, startTime: time)
+        }
+    }
+
+    private func resetPendingBuffer() {
+        segmentationRequestID += 1
+        segmentationGeneration = UUID()
+        pendingChunks.removeAll()
+        pendingText = ""
+    }
+
+    /// AI 不可用或返回无效内容时，用本地标点做兜底切分
+    private static func fallbackSegments(for text: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        for character in text {
+            current.append(character)
+            if "。！？!?\n".contains(character) {
+                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { result.append(trimmed) }
+                current = ""
+            }
+        }
+        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { result.append(tail) }
+        return result.isEmpty ? [text] : result
+    }
+
+    /// 根据句子在原文中的位置，映射到所属识别片段的起始时间
+    private func startTimes(for sentences: [String], chunks: [PendingSpeechChunk]) -> [TimeInterval] {
+        let original = chunks.map(\.text).joined()
+        var searchStart = original.startIndex
+        var times: [TimeInterval] = []
+        for sentence in sentences {
+            if searchStart < original.endIndex,
+               let range = original.range(of: sentence, range: searchStart..<original.endIndex) {
+                let offset = original.distance(from: original.startIndex, to: range.lowerBound)
+                times.append(startTime(at: offset, in: chunks))
+                searchStart = range.upperBound
+            } else {
+                times.append(chunks.first?.startTime ?? 0)
+            }
+        }
+        return times
+    }
+
+    private func startTime(at offset: Int, in chunks: [PendingSpeechChunk]) -> TimeInterval {
+        var cumulative = 0
+        for chunk in chunks {
+            let length = chunk.text.count
+            if offset < cumulative + length {
+                return chunk.startTime
+            }
+            cumulative += length
+        }
+        return chunks.last?.startTime ?? 0
     }
 
     /// 手动重试某一条未生成译文的字幕

@@ -18,8 +18,10 @@ struct LiveCaptionsView: View {
     @State private var newText = ""
     /// 上一次完整实时文本，用于计算新增部分
     @State private var previousPartial = ""
-    /// 停顿后把新增文字转为普通样式
-    @State private var settleTask: Task<Void, Never>?
+    /// 新增文字的淡入透明度
+    @State private var newTextOpacity: Double = 1
+    /// 控制新增文字的淡入与去模糊动画
+    @State private var appearanceTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,12 +41,12 @@ struct LiveCaptionsView: View {
         .onAppear {
             viewModel.prepareSystemAudioServer()
             // 重新进入页面时把已有实时文字当作普通文字，避免残留旧高亮
-            stableText = viewModel.livePartialText
+            stableText = viewModel.liveDisplayText
             newText = ""
-            previousPartial = viewModel.livePartialText
+            previousPartial = viewModel.liveDisplayText
             textBlurRadius = 0
         }
-        .onChange(of: viewModel.livePartialText) { _, newValue in
+        .onChange(of: viewModel.liveDisplayText) { _, newValue in
             updateHighlightedText(newValue)
         }
     }
@@ -88,12 +90,19 @@ struct LiveCaptionsView: View {
                     .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                // 顶层：仅新增文字彩色显示并做模糊，旧文字透明占位
-                liveTextLayer(hidingStable: true, hidingNew: false)
+                // 顶层：仅新增文字彩色显示，colors 随时间流动，旧文字透明占位
+                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: newText.isEmpty)) { context in
+                    liveTextLayer(
+                        hidingStable: true,
+                        hidingNew: false,
+                        phase: gradientPhase(for: context.date)
+                    )
                     .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .blur(radius: textBlurRadius)
+                    .opacity(newTextOpacity)
+                }
             }
 
             if settings.realtimeTranslationEnabled {
@@ -102,7 +111,7 @@ struct LiveCaptionsView: View {
                         .fill(Color.accentColor)
                         .frame(width: 3)
                         .padding(.top, 2)
-                    Text("断句后生成译文")
+                    Text(viewModel.pendingText.isEmpty ? "断句后生成译文" : "AI 整理分段中…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -131,8 +140,9 @@ struct LiveCaptionsView: View {
             newText = ""
             previousPartial = ""
             textBlurRadius = 0
-            settleTask?.cancel()
-            settleTask = nil
+            newTextOpacity = 1
+            appearanceTask?.cancel()
+            appearanceTask = nil
             return
         }
 
@@ -141,11 +151,7 @@ struct LiveCaptionsView: View {
         newText = String(text.dropFirst(common))
         previousPartial = text
 
-        textBlurRadius = 6
-        withAnimation(.easeOut(duration: 0.35)) {
-            textBlurRadius = 0
-        }
-        scheduleSettle(fullText: text)
+        animateNewTextAppearance()
     }
 
     private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
@@ -157,21 +163,32 @@ struct LiveCaptionsView: View {
         return count
     }
 
-    /// 停顿后把最后一段新增文字也转为普通样式
-    private func scheduleSettle(fullText: String) {
-        settleTask?.cancel()
-        settleTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            guard !Task.isCancelled, viewModel.livePartialText == fullText else { return }
+    /// 新文字先透明、模糊，下一帧再淡入并清晰，避免整段字突然闪现
+    private func animateNewTextAppearance() {
+        appearanceTask?.cancel()
+        textBlurRadius = 7
+        newTextOpacity = 0
+        appearanceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.45)) {
+                textBlurRadius = 0
+            }
             withAnimation(.easeOut(duration: 0.3)) {
-                stableText = fullText
-                newText = ""
+                newTextOpacity = 1
             }
         }
     }
 
+    /// 彩色渐变随时间横向流动的相位
+    private func gradientPhase(for date: Date) -> Double {
+        let cycle: Double = 3
+        return date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: cycle) / cycle
+    }
+
     /// 两层文字使用完全相同的字符与 run 结构，保证叠加时排版一致
-    private func liveTextLayer(hidingStable: Bool, hidingNew: Bool) -> Text {
+    private func liveTextLayer(hidingStable: Bool, hidingNew: Bool, phase: Double = 0) -> Text {
         var attributed = AttributedString()
         for character in stableText {
             var piece = AttributedString(String(character))
@@ -187,8 +204,10 @@ struct LiveCaptionsView: View {
                 let progress = newCharacters.count > 1
                     ? Double(index) / Double(newCharacters.count - 1)
                     : 0
+                let hue = (0.5 + 0.45 * progress + phase)
+                    .truncatingRemainder(dividingBy: 1)
                 piece.foregroundColor = Color(
-                    hue: 0.5 + 0.45 * progress,
+                    hue: hue,
                     saturation: 0.85,
                     brightness: 0.95
                 )
@@ -215,7 +234,7 @@ struct LiveCaptionsView: View {
                         .id(segment.id)
                     }
 
-                    if !viewModel.livePartialText.isEmpty {
+                    if !viewModel.liveDisplayText.isEmpty {
                         liveBubble
                     } else if viewModel.state == .listening {
                         listeningPlaceholder
@@ -226,7 +245,7 @@ struct LiveCaptionsView: View {
                         .id(bottomAnchorID)
                 }
                 .padding(.vertical, 12)
-                .animation(.easeInOut(duration: 0.25), value: viewModel.livePartialText.isEmpty)
+                .animation(.easeInOut(duration: 0.25), value: viewModel.liveDisplayText.isEmpty)
             }
             .onAppear {
                 scrollToBottom(proxy, animated: false)
@@ -234,7 +253,7 @@ struct LiveCaptionsView: View {
             .onChange(of: viewModel.segments.count) { _, _ in
                 scrollToBottom(proxy, animated: true)
             }
-            .onChange(of: viewModel.livePartialText) { _, text in
+            .onChange(of: viewModel.liveDisplayText) { _, text in
                 guard !text.isEmpty else { return }
                 scrollToBottom(proxy, animated: true)
             }
@@ -463,7 +482,7 @@ struct LiveCaptionsView: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: Circle())
-        .disabled(viewModel.segments.isEmpty && viewModel.livePartialText.isEmpty)
+        .disabled(viewModel.segments.isEmpty && viewModel.liveDisplayText.isEmpty)
         .accessibilityLabel("清空字幕")
     }
 

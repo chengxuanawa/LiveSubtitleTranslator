@@ -21,11 +21,48 @@ enum AIProviderMode: String, CaseIterable {
     }
 }
 
-/// 文本 AI 能力抽象（摘要 / 润色），可自由替换为任意实现
+/// 文本 AI 能力抽象（摘要 / 润色 / 断句），可自由替换为任意实现
 @MainActor
 protocol TextAIProviding: AnyObject {
     func summarize(_ text: String) async throws -> String?
-    func polish(_ text: String) async throws -> String?
+    /// 润色译文；targetLanguage 用于约束输出语言，禁止翻译成其他语言
+    func polish(_ text: String, targetLanguage: String) async throws -> String?
+    /// 只插入换行做语义断句，返回按行排列的原句，不改写原文
+    func segment(_ text: String) async throws -> String?
+}
+
+/// 断句提示词：仅允许插入换行，保证原文不被改写
+enum AISegmentationPrompt {
+    static let system = """
+    你负责为实时语音字幕做语义断句。用户会提供一段识别文本，请把它切成完整、自然的句子。
+
+    必须遵守：
+    1. 只能插入换行，不能增加、删除或修改任何文字、标点、数字。
+    2. 每行输出一句，不要编号，不要解释，不要 Markdown 或引号。
+    3. 如果原文已经是一句完整的话，直接原样输出。
+    4. 所有行按顺序拼接后，必须与输入文本完全一致。
+    """
+}
+
+/// 解析并校验断句结果；模型改动原文时返回 nil，交由本地规则兜底
+enum AISegmentationParser {
+    static func lines(from content: String, original: String) -> [String]? {
+        let rawLines = content.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !rawLines.isEmpty else { return nil }
+
+        let normalizedOriginal = normalize(original)
+        let normalizedJoined = normalize(rawLines.joined())
+        guard normalizedOriginal == normalizedJoined else { return nil }
+        return rawLines
+    }
+
+    private static func normalize(_ text: String) -> String {
+        // 保留单词之间的空格，只把连续空白压缩成一个空格，避免模型悄悄改词距
+        text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
 }
 
 /// 严格摘要提示词：只对已有字幕做压缩归纳，不改写、不扩写、不新增内容

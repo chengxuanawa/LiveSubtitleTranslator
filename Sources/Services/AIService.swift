@@ -69,11 +69,22 @@ final class AIService: ObservableObject {
         }
     }
 
-    func polish(segment: CaptionSegment) async -> String? {
+    func polish(segment: CaptionSegment, targetLanguage: String? = nil) async -> String? {
         guard isAvailable, let text = segment.translatedText else { return nil }
+        let identifier = targetLanguage ?? settings.targetLanguageIdentifier
+        let languageName = LanguageOption.option(for: identifier).displayName
         return await run { provider in
-            try await provider.polish(text)
+            try await provider.polish(text, targetLanguage: languageName)
         }
+    }
+
+    /// AI 语义断句：返回按顺序排列的完整句子；模型改写原文时返回 nil
+    func segmentSentences(_ text: String) async -> [String]? {
+        guard isAvailable else { return nil }
+        guard let content = await run({ provider in
+            try await provider.segment(text)
+        }) else { return nil }
+        return AISegmentationParser.lines(from: content, original: text)
     }
 
     // MARK: - 私有

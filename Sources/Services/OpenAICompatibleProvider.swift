@@ -21,10 +21,18 @@ final class OpenAICompatibleProvider: TextAIProviding {
         return AITextSanitizer.plainText(result ?? "")
     }
 
-    func polish(_ text: String) async throws -> String? {
-        let system = "你是翻译校对助手。把直译改写得更自然、口语化，保持原意。只输出改写后的纯文本，不要解释、引号、星号或任何格式符号。"
+    func polish(_ text: String, targetLanguage: String) async throws -> String? {
+        let system = """
+        你是译文润色助手。输入文本已经是\(targetLanguage)译文。
+        请只把表达改得更自然、口语化，必须保持\(targetLanguage)，严禁翻译成其他语言，严禁改写回原始语言。
+        只输出润色后的纯文本，不要解释、引号、星号或任何格式符号。
+        """
         let result = try await chat(system: system, user: text)
         return AITextSanitizer.plainText(result ?? "")
+    }
+
+    func segment(_ text: String) async throws -> String? {
+        try await chat(system: AISegmentationPrompt.system, user: text, temperature: 0.1)
     }
 
     // MARK: - 私有
