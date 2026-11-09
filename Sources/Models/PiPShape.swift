@@ -21,8 +21,9 @@ enum PiPShape: String, CaseIterable, Identifiable {
         switch self {
         // 16:9，接近系统默认画中画比例
         case .standard: return CGSize(width: 640, height: 360)
-        // 5:1 的细长条，尽量贴近单行字幕的形态
-        case .strip: return CGSize(width: 1500, height: 300)
+        // 7:1 的细长条；画布刻意用较小分辨率，
+        // 让小窗按屏幕宽度缩放后文字仍然够大
+        case .strip: return CGSize(width: 840, height: 120)
         }
     }
 }

@@ -90,19 +90,8 @@ private struct TranscriptDetailView: View {
 
     @State private var session: TranscriptSession
     @State private var isSummarizing = false
-    /// 摘要卡片是否已展示（新摘要生成后由扫光到中点时揭开）
+    /// 摘要卡片是否已展示（新摘要生成后淡入揭开）
     @State private var showSummary: Bool
-    /// glimm 扫光：开始时间 / 本次色相偏移 / 是否正在播放
-    @State private var sweepStart = Date()
-    @State private var sweepHue: Float = 0
-    @State private var sweepActive = false
-    @State private var sweepTask: Task<Void, Never>?
-
-    /// glimm 扫光总时长（1100ms 扫过 + 240ms 淡出）
-    private static let sweepDuration: Double = 1.1
-    private static let sweepOutro: Double = 0.24
-    /// 光脊越过屏幕中点、揭晓新内容的时刻（对应 glimm 的 midpoint 0.56）
-    private static let sweepMidpointDelay: Double = 0.36
 
     init(session: TranscriptSession) {
         _session = State(initialValue: session)
@@ -127,13 +116,6 @@ private struct TranscriptDetailView: View {
             .padding(.vertical, 12)
         }
         .background(Color(.systemGroupedBackground))
-        .overlay {
-            if sweepActive {
-                GlimmSweepOverlay(start: sweepStart, hueShift: sweepHue)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            }
-        }
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
         .softTopEdgeEffect()
@@ -166,40 +148,14 @@ private struct TranscriptDetailView: View {
     private func summarize() {
         guard !isSummarizing else { return }
         isSummarizing = true
-        // 点击即播放扫光：光脊到达中点时揭晓新摘要
-        startSummarySweep()
         Task {
             defer { isSummarizing = false }
             guard let summary = await aiService.summarize(session: session) else { return }
             session.summary = summary
             store.save(session)
-            // AI 若在光脊到达中点前返回，等扫光到中点再揭晓，避免抢在光带前面
-            if sweepActive {
-                let elapsed = Date().timeIntervalSince(sweepStart)
-                if elapsed < Self.sweepMidpointDelay {
-                    try? await Task.sleep(
-                        nanoseconds: UInt64((Self.sweepMidpointDelay - elapsed) * 1_000_000_000)
-                    )
-                }
-            }
             withAnimation(.easeOut(duration: 0.34)) {
                 showSummary = true
             }
-        }
-    }
-
-    /// 开始一次 glimm 扫光：光脊横穿屏幕，扫过中点时新内容在光带下出现
-    private func startSummarySweep() {
-        sweepTask?.cancel()
-        sweepStart = Date()
-        sweepHue = Float.random(in: 0...0.4)
-        sweepActive = true
-        sweepTask = Task { @MainActor in
-            try? await Task.sleep(
-                nanoseconds: UInt64((Self.sweepDuration + Self.sweepOutro + 0.02) * 1_000_000_000)
-            )
-            guard !Task.isCancelled else { return }
-            sweepActive = false
         }
     }
 
@@ -269,115 +225,58 @@ private struct TranscriptDetailView: View {
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.cyan.opacity(0.75),
-                            Color.blue.opacity(0.35),
-                            Color.purple.opacity(0.6),
-                            Color.pink.opacity(0.75),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        }
-        // 氛围光：卡片四周柔和彩色光晕
-        .background {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.cyan.opacity(0.45),
-                            Color.blue.opacity(0.30),
-                            Color.purple.opacity(0.42),
-                            Color.pink.opacity(0.38),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+            // 彩色描边实时流动：角向渐变缓慢旋转，形成沿边框游走的光
+            TimelineView(.animation(minimumInterval: 0.06)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 6) / 6
+                let angle = Angle.degrees(phase * 360)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(
+                        AngularGradient(
+                            colors: [
+                                Color.cyan.opacity(0.85),
+                                Color.blue.opacity(0.45),
+                                Color.purple.opacity(0.75),
+                                Color.pink.opacity(0.85),
+                                Color.cyan.opacity(0.85),
+                            ],
+                            center: .center,
+                            startAngle: angle,
+                            endAngle: angle + .degrees(360)
+                        ),
+                        lineWidth: 1.2
                     )
-                )
-                .blur(radius: 26)
-                .opacity(0.55)
-                .padding(-8)
+            }
+        }
+        // 氛围光：与描边同步旋转的彩色光晕，让卡片整体“活”起来
+        .background {
+            TimelineView(.animation(minimumInterval: 0.06)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 6) / 6
+                let angle = Angle.degrees(phase * 360)
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(
+                        AngularGradient(
+                            colors: [
+                                Color.cyan.opacity(0.45),
+                                Color.blue.opacity(0.30),
+                                Color.purple.opacity(0.42),
+                                Color.pink.opacity(0.38),
+                                Color.cyan.opacity(0.45),
+                            ],
+                            center: .center,
+                            startAngle: angle,
+                            endAngle: angle + .degrees(360)
+                        )
+                    )
+                    .blur(radius: 26)
+                    .opacity(0.55)
+                    .padding(-8)
+            }
         }
         .shadow(color: Color.purple.opacity(0.18), radius: 16, x: 0, y: 8)
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 2)
-    }
-}
-
-/// glimm 扫光：Metal 着色器逐像素绘制一条窄而亮的彩虹光脊，横穿屏幕
-private struct GlimmSweepOverlay: View {
-    /// 扫光开始时间
-    let start: Date
-    /// 本次扫光的色相偏移，让每次效果略有不同
-    let hueShift: Float
-
-    private static let duration: Double = 1.1
-    private static let outro: Double = 0.24
-    private static let peakAlpha: Float = 0.75
-
-    var body: some View {
-        TimelineView(.animation) { context in
-            let elapsed = context.date.timeIntervalSince(start)
-            GeometryReader { geometry in
-                Rectangle()
-                    // 着色器会完全接管像素颜色；这里用近乎透明的填充，
-                    // 万一着色器未加载也不会挡住内容
-                    .fill(Color.black.opacity(0.001))
-                    .colorEffect(
-                        ShaderLibrary.glimmSweep(
-                            .float(Float(geometry.size.width)),
-                            .float(Float(geometry.size.height)),
-                            .float(Self.easedProgress(elapsed)),
-                            .float(Float(elapsed)),
-                            .float(Self.alpha(elapsed)),
-                            .float(hueShift)
-                        )
-                    )
-            }
-        }
-    }
-
-    /// glimm 默认缓动 cubic-bezier(0.25, 0.1, 0.25, 1)
-    private static func easedProgress(_ elapsed: Double) -> Float {
-        let x = min(max(elapsed / duration, 0), 1)
-        return Float(bezierY(x: x, x1: 0.25, y1: 0.1, x2: 0.25, y2: 1.0))
-    }
-
-    /// 扫过后 240ms 内淡出；再往后光脊已在屏幕外，无可见影响
-    private static func alpha(_ elapsed: Double) -> Float {
-        guard elapsed > duration else { return peakAlpha }
-        let t = min(max((elapsed - duration) / outro, 0), 1)
-        let eased = t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
-        return peakAlpha * Float(1 - eased)
-    }
-
-    /// 由 x 反解三次贝塞尔曲线的 y，用作缓动曲线
-    private static func bezierY(
-        x: Double,
-        x1: Double,
-        y1: Double,
-        x2: Double,
-        y2: Double
-    ) -> Double {
-        func curve(_ t: Double, _ p1: Double, _ p2: Double) -> Double {
-            3 * (1 - t) * (1 - t) * t * p1 + 3 * (1 - t) * t * t * p2 + t * t * t
-        }
-        var low = 0.0
-        var high = 1.0
-        for _ in 0..<24 {
-            let mid = (low + high) / 2
-            if curve(mid, x1, x2) < x {
-                low = mid
-            } else {
-                high = mid
-            }
-        }
-        return curve((low + high) / 2, y1, y2)
     }
 }

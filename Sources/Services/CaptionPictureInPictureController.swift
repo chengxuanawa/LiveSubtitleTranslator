@@ -166,18 +166,20 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             paragraph.alignment = .left
             paragraph.lineBreakMode = .byTruncatingTail
 
-            let padding = size.height * 0.065
+            // 画中画窗口有圆角，左右留足内边距，避免文字被圆角切掉
+            let horizontalPadding = size.height * 0.22
+            let verticalPadding = size.height * 0.08
             let contentRect = CGRect(
-                x: padding,
-                y: padding,
-                width: size.width - padding * 2,
-                height: size.height - padding * 2
+                x: horizontalPadding,
+                y: verticalPadding,
+                width: size.width - horizontalPadding * 2,
+                height: size.height - verticalPadding * 2
             )
             let originalHeight = contentRect.height * 0.52
-            let gap: CGFloat = 8
+            let gap: CGFloat = size.height * 0.03
 
             let originalAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: size.height * 0.085, weight: .semibold),
+                .font: UIFont.systemFont(ofSize: size.height * 0.30, weight: .semibold),
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph,
             ]
@@ -188,7 +190,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
 
             if let translated {
                 let translatedAttributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: size.height * 0.068, weight: .regular),
+                    .font: UIFont.systemFont(ofSize: size.height * 0.24, weight: .regular),
                     .foregroundColor: UIColor.systemYellow,
                     .paragraphStyle: paragraph,
                 ]

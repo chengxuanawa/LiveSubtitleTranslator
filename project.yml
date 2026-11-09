@@ -23,9 +23,6 @@ targets:
       - path: Sources
         excludes:
           - "Resources/Info.plist"
-      # Metal 着色器显式声明为编译源，确保进入 default.metallib
-      - path: Shaders
-        buildPhase: sources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.sublingo
