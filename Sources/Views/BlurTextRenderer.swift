@@ -30,17 +30,14 @@ struct BlurTextRenderer: TextRenderer, Animatable {
         }
 
         let clamped = min(max(progress, 0), 1)
-        var glyphContext = context
-        glyphContext.opacity = clamped
-        glyphContext.addFilter(.blur(radius: maxBlur * CGFloat(1 - clamped)))
+        var blurContext = context
+        blurContext.opacity = clamped
+        blurContext.addFilter(.blur(radius: maxBlur * CGFloat(1 - clamped)))
 
-        // 逐字符绘制，保证换行、连写与多语言都能落在正确位置
+        // 整行一起去模糊：滤镜只作用于少量绘制命令，
+        // 比逐字符叠滤镜轻得多，避免入场时掉帧
         for line in layout {
-            for run in line {
-                for slice in run {
-                    glyphContext.draw(slice, options: .disablesSubpixelQuantization)
-                }
-            }
+            blurContext.draw(line)
         }
     }
 }

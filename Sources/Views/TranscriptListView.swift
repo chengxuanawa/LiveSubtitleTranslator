@@ -92,11 +92,17 @@ private struct TranscriptDetailView: View {
     @State private var isSummarizing = false
     /// 摘要卡片是否已展示（新摘要生成后由扫光到中点时揭开）
     @State private var showSummary: Bool
-    /// glimm 风格扫光：0 → 1 为光带横穿屏幕的进度
-    @State private var sweepProgress: CGFloat = 0
-    @State private var sweepOpacity: Double = 1
+    /// glimm 扫光：开始时间 / 本次色相偏移 / 是否正在播放
+    @State private var sweepStart = Date()
+    @State private var sweepHue: Float = 0
     @State private var sweepActive = false
     @State private var sweepTask: Task<Void, Never>?
+
+    /// glimm 扫光总时长（1100ms 扫过 + 240ms 淡出）
+    private static let sweepDuration: Double = 1.1
+    private static let sweepOutro: Double = 0.24
+    /// 光脊越过屏幕中点、揭晓新内容的时刻（对应 glimm 的 midpoint 0.56）
+    private static let sweepMidpointDelay: Double = 0.36
 
     init(session: TranscriptSession) {
         _session = State(initialValue: session)
@@ -123,8 +129,7 @@ private struct TranscriptDetailView: View {
         .background(Color(.systemGroupedBackground))
         .overlay {
             if sweepActive {
-                GlimmSweepOverlay(progress: sweepProgress)
-                    .opacity(sweepOpacity)
+                GlimmSweepOverlay(start: sweepStart, hueShift: sweepHue)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
@@ -161,44 +166,38 @@ private struct TranscriptDetailView: View {
     private func summarize() {
         guard !isSummarizing else { return }
         isSummarizing = true
+        // 点击即播放扫光：光脊到达中点时揭晓新摘要
+        startSummarySweep()
         Task {
             defer { isSummarizing = false }
             guard let summary = await aiService.summarize(session: session) else { return }
             session.summary = summary
             store.save(session)
-            // 摘要就绪后播放 glimm 扫光，光带越过中点时揭开摘要卡片
-            playSummarySweep()
+            // AI 若在光脊到达中点前返回，等扫光到中点再揭晓，避免抢在光带前面
+            if sweepActive {
+                let elapsed = Date().timeIntervalSince(sweepStart)
+                if elapsed < Self.sweepMidpointDelay {
+                    try? await Task.sleep(
+                        nanoseconds: UInt64((Self.sweepMidpointDelay - elapsed) * 1_000_000_000)
+                    )
+                }
+            }
+            withAnimation(.easeOut(duration: 0.34)) {
+                showSummary = true
+            }
         }
     }
 
-    /// glimm 风格状态切换：彩色光带扫过屏幕，新摘要在中途出现
-    private func playSummarySweep() {
+    /// 开始一次 glimm 扫光：光脊横穿屏幕，扫过中点时新内容在光带下出现
+    private func startSummarySweep() {
         sweepTask?.cancel()
-        sweepOpacity = 1
-        sweepProgress = 0
+        sweepStart = Date()
+        sweepHue = Float.random(in: 0...0.4)
         sweepActive = true
         sweepTask = Task { @MainActor in
-            // 等一帧让光带先以起点姿态进入视图，再开始扫动
-            try? await Task.sleep(nanoseconds: 20_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 1.1)) {
-                sweepProgress = 1
-            }
-
-            // 约在扫过中点（0.56）时揭开摘要卡片
-            try? await Task.sleep(nanoseconds: 590_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.32)) {
-                showSummary = true
-            }
-
-            // 光带走完屏幕后淡出
-            try? await Task.sleep(nanoseconds: 510_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.22)) {
-                sweepOpacity = 0
-            }
-            try? await Task.sleep(nanoseconds: 230_000_000)
+            try? await Task.sleep(
+                nanoseconds: UInt64((Self.sweepDuration + Self.sweepOutro + 0.02) * 1_000_000_000)
+            )
             guard !Task.isCancelled else { return }
             sweepActive = false
         }
@@ -233,52 +232,74 @@ private struct TranscriptDetailView: View {
     }
 }
 
-/// glimm 风格扫光：单条彩色光带横穿屏幕，边缘高斯柔化，用于强调一次状态切换
+/// glimm 扫光：Metal 着色器逐像素绘制一条窄而亮的彩虹光脊，横穿屏幕
 private struct GlimmSweepOverlay: View {
-    /// 0 → 1 为光带从屏幕左外侧移动到右外侧
-    var progress: CGFloat
+    /// 扫光开始时间
+    let start: Date
+    /// 本次扫光的色相偏移，让每次效果略有不同
+    let hueShift: Float
 
-    /// prism 配色：沿光带方向由冷到暖流动
-    private let palette: [Color] = [.cyan, .blue, .purple, .pink, .orange]
+    private static let duration: Double = 1.1
+    private static let outro: Double = 0.24
+    private static let peakAlpha: Float = 0.75
 
     var body: some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            let height = geometry.size.height
-            let bandWidth = width * 0.52
-            let offsetX = -bandWidth + (width + bandWidth) * progress
-
-            ZStack(alignment: .leading) {
-                band(width: bandWidth, height: height)
-                    .blur(radius: 30)
-                    .opacity(0.82)
-                band(width: bandWidth * 0.36, height: height)
-                    .frame(width: bandWidth, height: height)
-                    .blur(radius: 8)
-                    .opacity(0.9)
+        TimelineView(.animation) { context in
+            let elapsed = context.date.timeIntervalSince(start)
+            GeometryReader { geometry in
+                Rectangle()
+                    // 着色器会完全接管像素颜色；这里用近乎透明的填充，
+                    // 万一着色器未加载也不会挡住内容
+                    .fill(Color.black.opacity(0.001))
+                    .colorEffect(
+                        ShaderLibrary.glimmSweep(
+                            .float(Float(geometry.size.width)),
+                            .float(Float(geometry.size.height)),
+                            .float(Self.easedProgress(elapsed)),
+                            .float(Float(elapsed)),
+                            .float(Self.alpha(elapsed)),
+                            .float(hueShift)
+                        )
+                    )
             }
-            .frame(width: bandWidth, height: height)
-            .offset(x: offsetX)
-            .frame(width: width, height: height, alignment: .leading)
         }
     }
 
-    /// 光带本体：颜色沿纵向渐变，横向用柔和的透明度衰减做出高斯式边缘
-    private func band(width: CGFloat, height: CGFloat) -> some View {
-        LinearGradient(colors: palette, startPoint: .top, endPoint: .bottom)
-            .frame(width: width, height: height)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0),
-                        .init(color: .white.opacity(0.28), location: 0.2),
-                        .init(color: .white, location: 0.5),
-                        .init(color: .white.opacity(0.28), location: 0.8),
-                        .init(color: .clear, location: 1),
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
+    /// glimm 默认缓动 cubic-bezier(0.25, 0.1, 0.25, 1)
+    private static func easedProgress(_ elapsed: Double) -> Float {
+        let x = min(max(elapsed / duration, 0), 1)
+        return Float(bezierY(x: x, x1: 0.25, y1: 0.1, x2: 0.25, y2: 1.0))
+    }
+
+    /// 扫过后 240ms 内淡出；再往后光脊已在屏幕外，无可见影响
+    private static func alpha(_ elapsed: Double) -> Float {
+        guard elapsed > duration else { return peakAlpha }
+        let t = min(max((elapsed - duration) / outro, 0), 1)
+        let eased = t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
+        return peakAlpha * Float(1 - eased)
+    }
+
+    /// 由 x 反解三次贝塞尔曲线的 y，用作缓动曲线
+    private static func bezierY(
+        x: Double,
+        x1: Double,
+        y1: Double,
+        x2: Double,
+        y2: Double
+    ) -> Double {
+        func curve(_ t: Double, _ p1: Double, _ p2: Double) -> Double {
+            3 * (1 - t) * (1 - t) * t * p1 + 3 * (1 - t) * t * t * p2 + t * t * t
+        }
+        var low = 0.0
+        var high = 1.0
+        for _ in 0..<24 {
+            let mid = (low + high) / 2
+            if curve(mid, x1, x2) < x {
+                low = mid
+            } else {
+                high = mid
+            }
+        }
+        return curve((low + high) / 2, y1, y2)
     }
 }

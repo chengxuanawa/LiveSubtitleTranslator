@@ -30,36 +30,39 @@ struct LiveCaptionsView: View {
     @AppStorage("autoScrollLockSeconds") private var autoScrollLockSeconds: Double = 6
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            segmentList
-        }
-        .safeAreaPadding(.bottom, 96)
-        .frame(maxWidth: 900)
-        .frame(maxWidth: .infinity)
-        .background(Color(.systemBackground).ignoresSafeArea())
-        .overlay(alignment: .bottomTrailing) {
-            floatingControls
-        }
-        .translationTask(source: sourceLanguage, target: targetLanguage) { session in
-            viewModel.attachTranslationSession(session)
-        }
-        .onAppear {
-            viewModel.prepareSystemAudioServer()
-            // 重新进入页面时把已有实时文字当作普通文字，避免残留旧高亮
-            stableText = viewModel.liveDisplayText
-            newText = ""
-            previousPartial = viewModel.liveDisplayText
-            textBlurRadius = 0
-            // 彩色流光只启动一次，气泡内容切换时不会重置
-            gradientHue = 0
-            withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
-                gradientHue = 360
+        // 顶栏作为滚动视图的安全区插入视图：列表会滑到顶栏与状态栏下方，
+        // 再配合 soft 滚动边缘，内容在顶部区域柔和模糊，而不是硬切
+        segmentList
+            .safeAreaInset(edge: .top, spacing: 0) {
+                header
             }
-        }
-        .onChange(of: viewModel.liveDisplayText) { _, newValue in
-            updateHighlightedText(newValue)
-        }
+            .softTopEdgeEffect()
+            .safeAreaPadding(.bottom, 96)
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
+            .background(Color(.systemBackground).ignoresSafeArea())
+            .overlay(alignment: .bottomTrailing) {
+                floatingControls
+            }
+            .translationTask(source: sourceLanguage, target: targetLanguage) { session in
+                viewModel.attachTranslationSession(session)
+            }
+            .onAppear {
+                viewModel.prepareSystemAudioServer()
+                // 重新进入页面时把已有实时文字当作普通文字，避免残留旧高亮
+                stableText = viewModel.liveDisplayText
+                newText = ""
+                previousPartial = viewModel.liveDisplayText
+                textBlurRadius = 0
+                // 彩色流光只启动一次，气泡内容切换时不会重置
+                gradientHue = 0
+                withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
+                    gradientHue = 360
+                }
+            }
+            .onChange(of: viewModel.liveDisplayText) { _, newValue in
+                updateHighlightedText(newValue)
+            }
     }
 
     // MARK: - 顶部标题栏
@@ -256,24 +259,19 @@ struct LiveCaptionsView: View {
                 }
                 .padding(.vertical, 12)
             }
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            // 内容变高时由系统保持底部锚点：文字连续增长时偏移同步跟随，
+            // 不会像手动 scrollTo 那样一截一截地跳
+            .defaultScrollAnchor(autoScrollLocked ? nil : .bottom, for: .sizeChanges)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 8)
                     .onChanged { _ in
                         // 用户手动滑动时暂停自动跟随，避免被新文字拉回底部
-                        lockAutoScroll()
+                        lockAutoScroll(proxy)
                     }
             )
             .onAppear {
                 scrollToBottom(proxy, animated: false, force: true)
-            }
-            .onChange(of: viewModel.segments.count) { _, _ in
-                // 全部使用无动画滚动，避免与高频实时文字滚动互相打断
-                scrollToBottom(proxy, animated: false)
-            }
-            .onChange(of: viewModel.liveDisplayText) { _, text in
-                guard !text.isEmpty else { return }
-                // 实时文字变化很频繁，不做滚动动画，减轻卡顿
-                scrollToBottom(proxy, animated: false)
             }
             .onChange(of: viewModel.state) { _, state in
                 if state == .listening {
@@ -284,21 +282,28 @@ struct LiveCaptionsView: View {
                 }
             }
             .overlay(alignment: .trailing) {
-                if autoScrollLocked, viewModel.state == .listening {
-                    autoScrollLockControl(proxy)
-                        .padding(.trailing, 8)
-                        .padding(.bottom, 120)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                ZStack(alignment: .trailing) {
+                    if autoScrollLocked, viewModel.state == .listening {
+                        autoScrollLockControl(proxy)
+                            .padding(.trailing, 8)
+                            .padding(.bottom, 120)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
                 }
+                .animation(.spring(response: 0.3, dampingFraction: 0.82), value: autoScrollLocked)
             }
-            .animation(.spring(response: 0.3, dampingFraction: 0.82), value: autoScrollLocked)
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool, force: Bool = false) {
+    private func scrollToBottom(
+        _ proxy: ScrollViewProxy,
+        animated: Bool,
+        force: Bool = false,
+        duration: Double = 0.25
+    ) {
         guard force || !autoScrollLocked else { return }
         if animated {
-            withAnimation(.easeOut(duration: 0.25)) {
+            withAnimation(.easeInOut(duration: duration)) {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
             }
         } else {
@@ -307,7 +312,7 @@ struct LiveCaptionsView: View {
     }
 
     /// 开始或重置自动滚动锁定倒计时（仅在识别期间生效）
-    private func lockAutoScroll() {
+    private func lockAutoScroll(_ proxy: ScrollViewProxy) {
         guard viewModel.state == .listening else { return }
         autoScrollLocked = true
         autoScrollUnlockTask?.cancel()
@@ -316,6 +321,8 @@ struct LiveCaptionsView: View {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             autoScrollLocked = false
+            // 锁定结束平滑滑回最新位置，而不是等下一段文字突然拉过去
+            scrollToBottom(proxy, animated: true, force: true, duration: 0.5)
         }
     }
 
@@ -332,7 +339,7 @@ struct LiveCaptionsView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            verticalLockSlider
+            verticalLockSlider(proxy)
                 .frame(width: 28, height: 110)
 
             Text("\(Int(autoScrollLockSeconds))s")
@@ -353,7 +360,7 @@ struct LiveCaptionsView: View {
         .glassEffect(.regular, in: Capsule())
     }
 
-    private var verticalLockSlider: some View {
+    private func verticalLockSlider(_ proxy: ScrollViewProxy) -> some View {
         GeometryReader { geometry in
             let height = geometry.size.height
             let fraction = CGFloat((autoScrollLockSeconds - 1) / 29)
@@ -385,7 +392,7 @@ struct LiveCaptionsView: View {
                         let newFraction = 1 - value.location.y / height
                         let seconds = 1 + Double(round(Double(newFraction) * 29))
                         autoScrollLockSeconds = min(30, max(1, seconds))
-                        lockAutoScroll()
+                        lockAutoScroll(proxy)
                     }
             )
         }

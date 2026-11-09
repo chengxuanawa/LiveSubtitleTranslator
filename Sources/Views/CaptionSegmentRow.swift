@@ -47,6 +47,7 @@ struct CaptionSegmentRow: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
                 .textRenderer(BlurTextRenderer(progress: originalProgress))
+                .offset(y: CGFloat(max(0, 1 - originalProgress)) * 10)
 
             if let translated = segment.displayTranslatedText {
                 if showsPolishedHighlight, segment.polishedText != nil {
@@ -63,6 +64,7 @@ struct CaptionSegmentRow: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .textRenderer(BlurTextRenderer(progress: translatedProgress))
+                            .offset(y: CGFloat(max(0, 1 - translatedProgress)) * 8)
                     }
                 }
             } else if showTranslationFailure {
@@ -91,12 +93,17 @@ struct CaptionSegmentRow: View {
             // 只有首次出现且未播放过的气泡才播入场动画；流式追加不会重播
             guard !segment.hasAnimated, !didTriggerReveal else { return }
             didTriggerReveal = true
-            onReveal?()
-            withAnimation(.easeOut(duration: 0.4)) {
+            // 弹簧曲线带轻微回弹，配合上浮让文字显得轻盈而不是硬切
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
                 originalProgress = 1
             }
-            withAnimation(.easeOut(duration: 0.4).delay(0.15)) {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(0.13)) {
                 translatedProgress = 1
+            }
+            // 动画播完再回写标记，避免列表在动画首帧重算造成卡顿
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 720_000_000)
+                onReveal?()
             }
         }
         .contextMenu {
