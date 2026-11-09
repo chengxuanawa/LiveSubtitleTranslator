@@ -179,7 +179,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             let gap: CGFloat = size.height * 0.03
 
             let originalAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: size.height * 0.30, weight: .semibold),
+                .font: UIFont.systemFont(ofSize: size.height * 0.26, weight: .semibold),
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph,
             ]
@@ -190,7 +190,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
 
             if let translated {
                 let translatedAttributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: size.height * 0.24, weight: .regular),
+                    .font: UIFont.systemFont(ofSize: size.height * 0.21, weight: .medium),
                     .foregroundColor: UIColor.systemYellow,
                     .paragraphStyle: paragraph,
                 ]
