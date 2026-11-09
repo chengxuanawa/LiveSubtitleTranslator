@@ -57,6 +57,10 @@ final class LiveSessionViewModel: ObservableObject {
     private var sourceIdentifier = ""
     private var targetIdentifier = ""
     private var lastVisualUpdate = Date.distantPast
+    /// 实时预览节流：最近一次已发布的部分识别结果与发布时间
+    private var latestPartialText = ""
+    private var lastPartialPublish = Date.distantPast
+    private var partialThrottleTask: Task<Void, Never>?
     /// 本次录制的地点名（定位完成后写入，用于「位置」标题）
     private var sessionLocationName: String?
     /// 本次录制自动生成的 AI 摘要（用于「AI 标题」）
@@ -100,9 +104,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     private func wireCallbacks() {
         speechRecognizer.onPartialUpdate = { [weak self] text in
-            guard let self else { return }
-            self.livePartialText = text
-            self.pushPartialUpdate(text)
+            self?.publishPartialText(text)
         }
         speechRecognizer.onFinalSegment = { [weak self] text, startTime in
             self?.handleFinalSegment(text, startTime: startTime)
@@ -191,7 +193,7 @@ final class LiveSessionViewModel: ObservableObject {
         errorMessage = nil
         segments = []
         failedTranslationIDs.removeAll()
-        livePartialText = ""
+        resetPartialPreview()
         resetPendingBuffer()
         startNewSessionContext()
 
@@ -218,7 +220,7 @@ final class LiveSessionViewModel: ObservableObject {
         errorMessage = nil
         segments = []
         failedTranslationIDs.removeAll()
-        livePartialText = ""
+        resetPartialPreview()
         resetPendingBuffer()
         startNewSessionContext()
 
@@ -254,7 +256,7 @@ final class LiveSessionViewModel: ObservableObject {
         speechRecognizer.stop()
         // 结束前把还没被 AI 整理的片段直接落库，避免丢失
         flushPendingBuffer()
-        livePartialText = ""
+        resetPartialPreview()
         liveActivity.end()
         keepAlive.stop()
         pipController.stop()
@@ -270,8 +272,15 @@ final class LiveSessionViewModel: ObservableObject {
         resetPendingBuffer()
         segments = []
         failedTranslationIDs.removeAll()
-        livePartialText = ""
+        resetPartialPreview()
         sessionStart = Date()
+    }
+
+    /// 字幕气泡入场动画已播放，写回标记避免列表复用或滚动复现时重播
+    func markSegmentAnimated(_ segmentID: UUID) {
+        guard let index = segments.firstIndex(where: { $0.id == segmentID }),
+              !segments[index].hasAnimated else { return }
+        segments[index].hasAnimated = true
     }
 
     /// AI 润色结果回填到对应字幕片段
@@ -365,6 +374,36 @@ final class LiveSessionViewModel: ObservableObject {
         isPictureInPictureActive = false
     }
 
+    /// 以约 12Hz 的频率发布部分识别结果，避免高频刷新造成文字抖动；尾部补发保证文本不丢失
+    private func publishPartialText(_ text: String) {
+        latestPartialText = text
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastPartialPublish)
+        if elapsed >= 0.08 {
+            lastPartialPublish = now
+            livePartialText = text
+            pushPartialUpdate(text)
+            return
+        }
+        partialThrottleTask?.cancel()
+        let delay = UInt64((0.08 - elapsed) * 1_000_000_000)
+        partialThrottleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled, let self, !self.latestPartialText.isEmpty else { return }
+            self.lastPartialPublish = Date()
+            self.livePartialText = self.latestPartialText
+            self.pushPartialUpdate(self.latestPartialText)
+        }
+    }
+
+    /// 清空实时预览并取消未执行的节流补发
+    private func resetPartialPreview() {
+        partialThrottleTask?.cancel()
+        partialThrottleTask = nil
+        latestPartialText = ""
+        livePartialText = ""
+    }
+
     /// 部分识别结果节流同步到灵动岛 / 画中画（约 1 秒一次）
     private func pushPartialUpdate(_ text: String) {
         guard !text.isEmpty else { return }
@@ -381,7 +420,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     private func handleFinalSegment(_ text: String, startTime: TimeInterval) {
         // 一句结束：先清空实时预览；有 AI 时先进入缓冲，停顿后整理成完整句子
-        livePartialText = ""
+        resetPartialPreview()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -428,7 +467,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     // MARK: - AI 分段
 
-    /// 停顿约 1 秒后交给 AI 合并/切分；缓冲过长时立即整理
+    /// 停顿约 0.3 秒后交给 AI 合并/切分；缓冲过长时立即整理
     private func schedulePendingSegmentation() {
         guard !pendingChunks.isEmpty else { return }
         guard aiService.isAvailable else {
@@ -441,7 +480,7 @@ final class LiveSessionViewModel: ObservableObject {
         let force = pendingText.count >= 120 || pendingChunks.count >= 4
         segmentationTask = Task { [weak self] in
             if !force {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 300_000_000)
             }
             guard let self,
                   !Task.isCancelled,

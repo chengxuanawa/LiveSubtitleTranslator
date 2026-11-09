@@ -17,6 +17,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     var shape: PiPShape = .standard {
         didSet {
             guard shape != oldValue, isActive else { return }
+            // 分辨率变化需要丢弃旧格式的缓冲，否则新画幅不会生效
+            displayLayer.flush()
             render(original: lastContent?.original ?? "SubLingo", translated: lastContent?.translated)
         }
     }
@@ -126,6 +128,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
 
     private func render(original: String, translated: String?) {
         let size = shape.renderSize
+        // 让显示层保持与视频一致的宽高比，系统据此决定画中画窗口比例
+        fitDisplayLayer(to: size)
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { context in
             UIColor.black.setFill()
@@ -221,10 +225,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return nil }
-        // CGBitmapContext 原点在左下；画中画实际显示时整体是 180° 旋转的，
-        // 这里用水平翻转抵消，最终文字方向才是正的
-        context.translateBy(x: CGFloat(width), y: 0)
-        context.scaleBy(x: -1, y: 1)
+        // CGContext 的位图内存首行就是画面顶部，直接绘制即为正常方向，
+        // 不要再做翻转，否则画中画里文字会镜像
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         var formatDescription: CMVideoFormatDescription?
@@ -249,6 +251,25 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             sampleBufferOut: &sampleBuffer
         )
         return sampleBuffer
+    }
+
+    /// 显示层按视频宽高比在窗口内居中，避免整窗比例覆盖画中画窗口形状
+    private func fitDisplayLayer(to videoSize: CGSize) {
+        guard let hostView else { return }
+        let bounds = hostView.bounds
+        guard bounds.width > 0, bounds.height > 0,
+              videoSize.width > 0, videoSize.height > 0 else { return }
+        let scale = min(bounds.width / videoSize.width, bounds.height / videoSize.height)
+        let fitted = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.frame = CGRect(
+            x: (bounds.width - fitted.width) / 2,
+            y: (bounds.height - fitted.height) / 2,
+            width: fitted.width,
+            height: fitted.height
+        )
+        CATransaction.commit()
     }
 
     private func attachToWindow() {

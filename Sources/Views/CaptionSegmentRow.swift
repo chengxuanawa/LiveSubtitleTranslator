@@ -12,12 +12,41 @@ struct CaptionSegmentRow: View {
     var onRetryTranslation: (() -> Void)? = nil
     /// 可选的 AI 润色回调；为 nil 时不显示润色按钮
     var onPolishRequest: (() -> Void)? = nil
+    /// 入场动画开始时回调，用于把 hasAnimated 写回数据源，避免列表复用重播
+    var onReveal: (() -> Void)? = nil
+
+    /// 原文 / 译文的模糊渐显进度
+    @State private var originalProgress: Double
+    @State private var translatedProgress: Double
+    /// 本次实例是否已经触发过入场动画
+    @State private var didTriggerReveal = false
+
+    init(
+        segment: CaptionSegment,
+        showTranslationFailure: Bool = false,
+        showsPolishedHighlight: Bool = false,
+        onRetryTranslation: (() -> Void)? = nil,
+        onPolishRequest: (() -> Void)? = nil,
+        onReveal: (() -> Void)? = nil
+    ) {
+        self.segment = segment
+        self.showTranslationFailure = showTranslationFailure
+        self.showsPolishedHighlight = showsPolishedHighlight
+        self.onRetryTranslation = onRetryTranslation
+        self.onPolishRequest = onPolishRequest
+        self.onReveal = onReveal
+        // 已播放过（含历史记录）直接以最终状态显示，不重播动画
+        let initialProgress: Double = segment.hasAnimated ? 1 : 0
+        _originalProgress = State(initialValue: initialProgress)
+        _translatedProgress = State(initialValue: initialProgress)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(segment.originalText)
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
+                .textRenderer(BlurTextRenderer(progress: originalProgress))
 
             if let translated = segment.displayTranslatedText {
                 if showsPolishedHighlight, segment.polishedText != nil {
@@ -33,6 +62,7 @@ struct CaptionSegmentRow: View {
                             .foregroundStyle(segment.polishedText == nil ? .secondary : .primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textRenderer(BlurTextRenderer(progress: translatedProgress))
                     }
                 }
             } else if showTranslationFailure {
@@ -57,6 +87,18 @@ struct CaptionSegmentRow: View {
         .padding(.vertical, 10)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 12)
+        .onAppear {
+            // 只有首次出现且未播放过的气泡才播入场动画；流式追加不会重播
+            guard !segment.hasAnimated, !didTriggerReveal else { return }
+            didTriggerReveal = true
+            onReveal?()
+            withAnimation(.easeOut(duration: 0.4)) {
+                originalProgress = 1
+            }
+            withAnimation(.easeOut(duration: 0.4).delay(0.15)) {
+                translatedProgress = 1
+            }
+        }
         .contextMenu {
             Button {
                 UIPasteboard.general.string = segment.originalText

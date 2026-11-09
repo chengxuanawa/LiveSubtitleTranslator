@@ -19,8 +19,10 @@ enum PiPShape: String, CaseIterable, Identifiable {
     /// 渲染画布尺寸，决定系统画中画窗口的宽高比
     var renderSize: CGSize {
         switch self {
+        // 16:9，接近系统默认画中画比例
         case .standard: return CGSize(width: 640, height: 360)
-        case .strip: return CGSize(width: 900, height: 300)
+        // 2.4:1 的长条；再宽会被系统画中画窗口限制裁掉
+        case .strip: return CGSize(width: 720, height: 300)
         }
     }
 }

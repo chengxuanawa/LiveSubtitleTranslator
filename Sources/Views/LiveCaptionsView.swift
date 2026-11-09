@@ -18,10 +18,16 @@ struct LiveCaptionsView: View {
     @State private var newText = ""
     /// 上一次完整实时文本，用于计算新增部分
     @State private var previousPartial = ""
-    /// 新增文字的淡入透明度
-    @State private var newTextOpacity: Double = 1
-    /// 控制新增文字的淡入与去模糊动画
+    /// 控制新增文字的模糊过渡动画
     @State private var appearanceTask: Task<Void, Never>?
+    /// 上一次模糊过渡的触发时间（限制触发频率，避免文字持续发虚）
+    @State private var lastAppearancePulse = Date.distantPast
+    /// 彩色流光相位（用 GPU 动画驱动，避免逐帧重排文字）
+    @State private var gradientHue: Double = 0
+    /// 用户滑动列表时临时暂停自动滚动
+    @State private var autoScrollLocked = false
+    @State private var autoScrollUnlockTask: Task<Void, Never>?
+    @AppStorage("autoScrollLockSeconds") private var autoScrollLockSeconds: Double = 6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,6 +51,11 @@ struct LiveCaptionsView: View {
             newText = ""
             previousPartial = viewModel.liveDisplayText
             textBlurRadius = 0
+            // 彩色流光只启动一次，气泡内容切换时不会重置
+            gradientHue = 0
+            withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) {
+                gradientHue = 360
+            }
         }
         .onChange(of: viewModel.liveDisplayText) { _, newValue in
             updateHighlightedText(newValue)
@@ -84,36 +95,37 @@ struct LiveCaptionsView: View {
     /// 正在识别中的字幕气泡：与已生成气泡同样式，自动换行
     private var liveBubble: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack(alignment: .topLeading) {
-                // 底层：已稳定文字正常显示，新增文字透明占位以保持排版
-                liveTextLayer(hidingStable: false, hidingNew: true)
+            if stableText.isEmpty && newText.isEmpty {
+                Text("正在聆听…")
                     .font(.body)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                // 顶层：仅新增文字彩色显示，colors 随时间流动，旧文字透明占位
-                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: newText.isEmpty)) { context in
-                    liveTextLayer(
-                        hidingStable: true,
-                        hidingNew: false,
-                        phase: gradientPhase(for: context.date)
-                    )
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .blur(radius: textBlurRadius)
-                    .opacity(newTextOpacity)
+            } else {
+                ZStack(alignment: .topLeading) {
+                    // 底层：已稳定文字正常显示，新增文字透明占位以保持排版
+                    liveTextLayer(hidingStable: false, hidingNew: true)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // 顶层：仅新增文字彩色显示，色相随时间流动，旧文字透明占位
+                    liveTextLayer(hidingStable: true, hidingNew: false)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hueRotation(.degrees(gradientHue))
+                        .blur(radius: textBlurRadius)
                 }
-            }
 
-            if settings.realtimeTranslationEnabled {
-                HStack(alignment: .top, spacing: 8) {
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(Color.accentColor)
-                        .frame(width: 3)
-                        .padding(.top, 2)
-                    Text(viewModel.pendingText.isEmpty ? "断句后生成译文" : "AI 整理分段中…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                if settings.realtimeTranslationEnabled {
+                    HStack(alignment: .top, spacing: 8) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Color.accentColor)
+                            .frame(width: 3)
+                            .padding(.top, 2)
+                        Text(viewModel.pendingText.isEmpty ? "断句后生成译文" : "AI 整理分段中…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -122,15 +134,6 @@ struct LiveCaptionsView: View {
         .padding(.vertical, 10)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 12)
-        .transition(.blurReplace)
-    }
-
-    private var listeningPlaceholder: some View {
-        Text("正在聆听…")
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 26)
     }
 
     /// 只让最新新增的文字带彩色渐变和模糊，旧文字保持普通样式
@@ -140,7 +143,6 @@ struct LiveCaptionsView: View {
             newText = ""
             previousPartial = ""
             textBlurRadius = 0
-            newTextOpacity = 1
             appearanceTask?.cancel()
             appearanceTask = nil
             return
@@ -163,55 +165,64 @@ struct LiveCaptionsView: View {
         return count
     }
 
-    /// 新文字先透明、模糊，下一帧再淡入并清晰，避免整段字突然闪现
+    /// 新文字先带模糊出现，再用一帧后的动画快速变清晰；连续到达的文字共用一次过渡
     private func animateNewTextAppearance() {
-        appearanceTask?.cancel()
-        textBlurRadius = 7
-        newTextOpacity = 0
+        guard appearanceTask == nil,
+              Date().timeIntervalSince(lastAppearancePulse) > 0.6 else { return }
+        lastAppearancePulse = Date()
+        textBlurRadius = 5
         appearanceTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 40_000_000)
+            try? await Task.sleep(nanoseconds: 16_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.45)) {
+            withAnimation(.easeOut(duration: 0.28)) {
                 textBlurRadius = 0
             }
-            withAnimation(.easeOut(duration: 0.3)) {
-                newTextOpacity = 1
-            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            appearanceTask = nil
         }
     }
 
-    /// 彩色渐变随时间横向流动的相位
-    private func gradientPhase(for date: Date) -> Double {
-        let cycle: Double = 3
-        return date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: cycle) / cycle
-    }
-
-    /// 两层文字使用完全相同的字符与 run 结构，保证叠加时排版一致
-    private func liveTextLayer(hidingStable: Bool, hidingNew: Bool, phase: Double = 0) -> Text {
+    /// 两层文字使用完全相同的字符结构，保证叠加时排版一致；
+    /// 只给最后少量新增字符上色，控制每次刷新的字符串构建开销
+    private func liveTextLayer(hidingStable: Bool, hidingNew: Bool) -> Text {
         var attributed = AttributedString()
-        for character in stableText {
-            var piece = AttributedString(String(character))
+        if !stableText.isEmpty {
+            var piece = AttributedString(stableText)
             piece.foregroundColor = hidingStable ? Color.clear : Color.primary
             attributed.append(piece)
         }
+
         let newCharacters = Array(newText)
-        for (index, character) in newCharacters.enumerated() {
+        guard !newCharacters.isEmpty else { return Text(attributed) }
+
+        if hidingNew {
+            var piece = AttributedString(newText)
+            piece.foregroundColor = Color.clear
+            attributed.append(piece)
+            return Text(attributed)
+        }
+
+        // 超出彩色尾巴的字符由底层普通样式显示，顶层留空占位
+        let coloredTail = 24
+        let leading = max(0, newCharacters.count - coloredTail)
+        if leading > 0 {
+            var piece = AttributedString(String(newCharacters[0..<leading]))
+            piece.foregroundColor = Color.clear
+            attributed.append(piece)
+        }
+
+        let tail = newCharacters[leading...]
+        for (index, character) in tail.enumerated() {
             var piece = AttributedString(String(character))
-            if hidingNew {
-                piece.foregroundColor = Color.clear
-            } else {
-                let progress = newCharacters.count > 1
-                    ? Double(index) / Double(newCharacters.count - 1)
-                    : 0
-                let hue = (0.5 + 0.45 * progress + phase)
-                    .truncatingRemainder(dividingBy: 1)
-                piece.foregroundColor = Color(
-                    hue: hue,
-                    saturation: 0.85,
-                    brightness: 0.95
-                )
-            }
+            let progress = tail.count > 1
+                ? Double(index) / Double(tail.count - 1)
+                : 0
+            piece.foregroundColor = Color(
+                hue: 0.5 + 0.45 * progress,
+                saturation: 0.85,
+                brightness: 0.95
+            )
             attributed.append(piece)
         }
         return Text(attributed)
@@ -229,15 +240,14 @@ struct LiveCaptionsView: View {
                             showTranslationFailure: settings.realtimeTranslationEnabled
                                 && viewModel.failedTranslationIDs.contains(segment.id),
                             onRetryTranslation: { viewModel.retryTranslation(for: segment) },
-                            onPolishRequest: { polish(segment) }
+                            onPolishRequest: { polish(segment) },
+                            onReveal: { viewModel.markSegmentAnimated(segment.id) }
                         )
                         .id(segment.id)
                     }
 
-                    if !viewModel.liveDisplayText.isEmpty {
+                    if !viewModel.liveDisplayText.isEmpty || viewModel.state == .listening {
                         liveBubble
-                    } else if viewModel.state == .listening {
-                        listeningPlaceholder
                     }
 
                     Color.clear
@@ -245,31 +255,139 @@ struct LiveCaptionsView: View {
                         .id(bottomAnchorID)
                 }
                 .padding(.vertical, 12)
-                .animation(.easeInOut(duration: 0.25), value: viewModel.liveDisplayText.isEmpty)
             }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 8)
+                    .onChanged { _ in
+                        // 用户手动滑动时暂停自动跟随，避免被新文字拉回底部
+                        lockAutoScroll()
+                    }
+            )
             .onAppear {
-                scrollToBottom(proxy, animated: false)
+                scrollToBottom(proxy, animated: false, force: true)
             }
             .onChange(of: viewModel.segments.count) { _, _ in
-                scrollToBottom(proxy, animated: true)
+                // 全部使用无动画滚动，避免与高频实时文字滚动互相打断
+                scrollToBottom(proxy, animated: false)
             }
             .onChange(of: viewModel.liveDisplayText) { _, text in
                 guard !text.isEmpty else { return }
-                scrollToBottom(proxy, animated: true)
+                // 实时文字变化很频繁，不做滚动动画，减轻卡顿
+                scrollToBottom(proxy, animated: false)
             }
-            .onChange(of: viewModel.state) { _, _ in
-                scrollToBottom(proxy, animated: true)
+            .onChange(of: viewModel.state) { _, state in
+                if state == .listening {
+                    scrollToBottom(proxy, animated: true)
+                } else {
+                    autoScrollUnlockTask?.cancel()
+                    autoScrollLocked = false
+                }
             }
+            .overlay(alignment: .trailing) {
+                if autoScrollLocked, viewModel.state == .listening {
+                    autoScrollLockControl(proxy)
+                        .padding(.trailing, 8)
+                        .padding(.bottom, 120)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.82), value: autoScrollLocked)
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool, force: Bool = false) {
+        guard force || !autoScrollLocked else { return }
         if animated {
             withAnimation(.easeOut(duration: 0.25)) {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
             }
         } else {
             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+        }
+    }
+
+    /// 开始或重置自动滚动锁定倒计时（仅在识别期间生效）
+    private func lockAutoScroll() {
+        guard viewModel.state == .listening else { return }
+        autoScrollLocked = true
+        autoScrollUnlockTask?.cancel()
+        let seconds = max(1, autoScrollLockSeconds)
+        autoScrollUnlockTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            autoScrollLocked = false
+        }
+    }
+
+    private func resumeAutoScroll(_ proxy: ScrollViewProxy) {
+        autoScrollUnlockTask?.cancel()
+        autoScrollLocked = false
+        scrollToBottom(proxy, animated: true, force: true)
+    }
+
+    /// 右侧弹出的锁定时间调节条：上下滑动设置暂停自动跟随的秒数
+    private func autoScrollLockControl(_ proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "lock.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            verticalLockSlider
+                .frame(width: 28, height: 110)
+
+            Text("\(Int(autoScrollLockSeconds))s")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Button {
+                resumeAutoScroll(proxy)
+            } label: {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("回到最新")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: Capsule())
+    }
+
+    private var verticalLockSlider: some View {
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            let fraction = CGFloat((autoScrollLockSeconds - 1) / 29)
+            ZStack(alignment: .bottom) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 4)
+                    .frame(maxHeight: .infinity)
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [.cyan, .blue, .purple],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                    )
+                    .frame(width: 4, height: max(4, height * fraction))
+                Circle()
+                    .fill(.white)
+                    .frame(width: 14, height: 14)
+                    .shadow(color: .black.opacity(0.18), radius: 2)
+                    .offset(y: -(height - 14) * fraction)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let newFraction = 1 - value.location.y / height
+                        let seconds = 1 + Double(round(Double(newFraction) * 29))
+                        autoScrollLockSeconds = min(30, max(1, seconds))
+                        lockAutoScroll()
+                    }
+            )
         }
     }
 

@@ -90,16 +90,25 @@ private struct TranscriptDetailView: View {
 
     @State private var session: TranscriptSession
     @State private var isSummarizing = false
+    /// 摘要卡片是否已展示（新摘要生成后由扫光到中点时揭开）
+    @State private var showSummary: Bool
+    /// glimm 风格扫光：0 → 1 为光带横穿屏幕的进度
+    @State private var sweepProgress: CGFloat = 0
+    @State private var sweepOpacity: Double = 1
+    @State private var sweepActive = false
+    @State private var sweepTask: Task<Void, Never>?
 
     init(session: TranscriptSession) {
         _session = State(initialValue: session)
+        _showSummary = State(initialValue: session.summary != nil)
     }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                if let summary = session.summary {
+                if showSummary, let summary = session.summary {
                     summaryCard(summary)
+                        .transition(.blurReplace)
                 }
                 ForEach(session.segments) { segment in
                     CaptionSegmentRow(
@@ -112,6 +121,14 @@ private struct TranscriptDetailView: View {
             .padding(.vertical, 12)
         }
         .background(Color(.systemGroupedBackground))
+        .overlay {
+            if sweepActive {
+                GlimmSweepOverlay(progress: sweepProgress)
+                    .opacity(sweepOpacity)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+        }
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
         .softTopEdgeEffect()
@@ -145,12 +162,45 @@ private struct TranscriptDetailView: View {
         guard !isSummarizing else { return }
         isSummarizing = true
         Task {
-            let summary = await aiService.summarize(session: session)
-            if let summary {
-                session.summary = summary
-                store.save(session)
+            defer { isSummarizing = false }
+            guard let summary = await aiService.summarize(session: session) else { return }
+            session.summary = summary
+            store.save(session)
+            // 摘要就绪后播放 glimm 扫光，光带越过中点时揭开摘要卡片
+            playSummarySweep()
+        }
+    }
+
+    /// glimm 风格状态切换：彩色光带扫过屏幕，新摘要在中途出现
+    private func playSummarySweep() {
+        sweepTask?.cancel()
+        sweepOpacity = 1
+        sweepProgress = 0
+        sweepActive = true
+        sweepTask = Task { @MainActor in
+            // 等一帧让光带先以起点姿态进入视图，再开始扫动
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 1.1)) {
+                sweepProgress = 1
             }
-            isSummarizing = false
+
+            // 约在扫过中点（0.56）时揭开摘要卡片
+            try? await Task.sleep(nanoseconds: 590_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.32)) {
+                showSummary = true
+            }
+
+            // 光带走完屏幕后淡出
+            try? await Task.sleep(nanoseconds: 510_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                sweepOpacity = 0
+            }
+            try? await Task.sleep(nanoseconds: 230_000_000)
+            guard !Task.isCancelled else { return }
+            sweepActive = false
         }
     }
 
@@ -180,5 +230,55 @@ private struct TranscriptDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
+    }
+}
+
+/// glimm 风格扫光：单条彩色光带横穿屏幕，边缘高斯柔化，用于强调一次状态切换
+private struct GlimmSweepOverlay: View {
+    /// 0 → 1 为光带从屏幕左外侧移动到右外侧
+    var progress: CGFloat
+
+    /// prism 配色：沿光带方向由冷到暖流动
+    private let palette: [Color] = [.cyan, .blue, .purple, .pink, .orange]
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let height = geometry.size.height
+            let bandWidth = width * 0.52
+            let offsetX = -bandWidth + (width + bandWidth) * progress
+
+            ZStack(alignment: .leading) {
+                band(width: bandWidth, height: height)
+                    .blur(radius: 30)
+                    .opacity(0.82)
+                band(width: bandWidth * 0.36, height: height)
+                    .frame(width: bandWidth, height: height)
+                    .blur(radius: 8)
+                    .opacity(0.9)
+            }
+            .frame(width: bandWidth, height: height)
+            .offset(x: offsetX)
+            .frame(width: width, height: height, alignment: .leading)
+        }
+    }
+
+    /// 光带本体：颜色沿纵向渐变，横向用柔和的透明度衰减做出高斯式边缘
+    private func band(width: CGFloat, height: CGFloat) -> some View {
+        LinearGradient(colors: palette, startPoint: .top, endPoint: .bottom)
+            .frame(width: width, height: height)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .white.opacity(0.28), location: 0.2),
+                        .init(color: .white, location: 0.5),
+                        .init(color: .white.opacity(0.28), location: 0.8),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
     }
 }
