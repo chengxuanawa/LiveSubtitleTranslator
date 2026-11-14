@@ -206,55 +206,58 @@ private struct TranscriptDetailView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        // 彩色渐变底色：只保留渐变，不用毛玻璃材质盖住背景
-        .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.cyan.opacity(0.16),
-                            Color.blue.opacity(0.10),
-                            Color.purple.opacity(0.16),
-                            Color.pink.opacity(0.12),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        }
-        // 彩色流光：角向渐变旋转，同时叠一层模糊描边做发光，流动更明显
-        .overlay {
-            TimelineView(.animation(minimumInterval: 0.05)) { context in
-                let phase = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 4) / 4
-                let angle = Angle.degrees(phase * 360)
-                let gradient = AngularGradient(
-                    colors: [
-                        Color.cyan,
-                        Color.blue,
-                        Color.purple,
-                        Color.pink,
-                        Color.cyan,
-                    ],
-                    center: .center,
-                    startAngle: angle,
-                    endAngle: angle + .degrees(360)
-                )
-                ZStack {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(gradient, lineWidth: 10)
-                        .blur(radius: 10)
-                        .opacity(0.85)
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(gradient, lineWidth: 2.4)
-                }
-            }
-        }
-        // 氛围光：卡片四周的彩色光晕，与描边同步旋转（不要移除，否则背景没有彩色光）
+        // 彩色氛围铺满整个摘要框：低透明角向渐变缓慢旋转
         .background {
             TimelineView(.animation(minimumInterval: 0.06)) { context in
                 let phase = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 4) / 4
+                    .truncatingRemainder(dividingBy: 6) / 6
+                let angle = Angle.degrees(phase * 360)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(
+                        AngularGradient(
+                            colors: [
+                                Color.cyan.opacity(0.20),
+                                Color.blue.opacity(0.14),
+                                Color.purple.opacity(0.20),
+                                Color.pink.opacity(0.16),
+                                Color.cyan.opacity(0.20),
+                            ],
+                            center: .center,
+                            startAngle: angle,
+                            endAngle: angle + .degrees(360)
+                        )
+                    )
+            }
+        }
+        // 描边流光：速度回退到 6 秒一圈，线条收细
+        .overlay {
+            TimelineView(.animation(minimumInterval: 0.06)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 6) / 6
+                let angle = Angle.degrees(phase * 360)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(
+                        AngularGradient(
+                            colors: [
+                                Color.cyan.opacity(0.80),
+                                Color.blue.opacity(0.40),
+                                Color.purple.opacity(0.70),
+                                Color.pink.opacity(0.80),
+                                Color.cyan.opacity(0.80),
+                            ],
+                            center: .center,
+                            startAngle: angle,
+                            endAngle: angle + .degrees(360)
+                        ),
+                        lineWidth: 1.2
+                    )
+            }
+        }
+        // 氛围光：卡片四周的彩色光晕，与描边同步旋转
+        .background {
+            TimelineView(.animation(minimumInterval: 0.06)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 6) / 6
                 let angle = Angle.degrees(phase * 360)
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(
