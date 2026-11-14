@@ -280,7 +280,7 @@ final class SpeechRecognizerService: SpeechRecognizing {
     // MARK: - 引擎准备
 
     /// 校验支持性、安装语言模型并创建 Analyzer
-    private func prepareAnalyzer() async -> (SpeechAnalyzer, SpeechTranscriber)? {
+    private func prepareAnalyzer() async -> (analyzer: SpeechAnalyzer, transcriber: SpeechTranscriber)? {
         guard SpeechTranscriber.isAvailable else {
             onError?("当前设备不支持新一代本机识别。")
             return nil
