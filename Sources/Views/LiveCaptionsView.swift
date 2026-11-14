@@ -61,9 +61,6 @@ struct LiveCaptionsView: View {
             }
             .frame(maxWidth: isLandscape ? .infinity : 900, maxHeight: .infinity)
             .background(Color(.systemBackground).ignoresSafeArea())
-            .translationTask(source: sourceLanguage, target: targetLanguage) { session in
-                viewModel.attachTranslationSession(session)
-            }
             .onAppear {
                 viewModel.prepareSystemAudioServer()
                 // 重新进入页面直接对齐当前文本，避免重放逐字动画
@@ -134,16 +131,6 @@ struct LiveCaptionsView: View {
         .padding(.horizontal, 16)
         .padding(.top, isLandscape ? 2 : 6)
         .padding(.bottom, isLandscape ? 4 : 8)
-    }
-
-    // MARK: - 翻译会话（由 SwiftUI translationTask 注入）
-
-    private var sourceLanguage: Locale.Language {
-        Locale.Language(identifier: settings.sourceLanguageIdentifier)
-    }
-
-    private var targetLanguage: Locale.Language {
-        Locale.Language(identifier: settings.targetLanguageIdentifier)
     }
 
     // MARK: - 实时字幕气泡（追加在列表底部）

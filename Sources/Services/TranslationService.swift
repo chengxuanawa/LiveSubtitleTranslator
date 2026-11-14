@@ -21,50 +21,141 @@ final class TranslationService: ObservableObject, TextTranslating {
 
     var onTranslationError: ((_ message: String) -> Void)?
 
+    private struct LanguagePair: Equatable {
+        let source: Locale.Language
+        let target: Locale.Language
+    }
+
+    private struct PendingItem {
+        let id: UUID
+        let text: String
+        let continuation: CheckedContinuation<String?, Never>
+    }
+
     private var session: TranslationSession?
-    private var activeSource: Locale.Language?
-    private var activeTarget: Locale.Language?
-    private var pendingItems: [(text: String, continuation: CheckedContinuation<String?, Never>)] = []
+    private var requestedPair: LanguagePair?
+    private var attachedPair: LanguagePair?
+    private var pendingItems: [PendingItem] = []
+    private var waitTimeouts: [UUID: Task<Void, Never>] = [:]
     private var isProcessing = false
 
     func setLanguagePair(source: Locale.Language, target: Locale.Language) async {
-        guard activeSource != source || activeTarget != target else { return }
-        activeSource = source
-        activeTarget = target
-        // 语言变化后 translationTask 会自动重建并重新注入新会话
-        session = nil
+        let pair = LanguagePair(source: source, target: target)
+        guard requestedPair != pair else { return }
+        requestedPair = pair
+        // 相同语言对继续复用现有会话；只有真正切换语言时才等待新会话。
+        if let attachedPair, attachedPair != pair {
+            session?.cancel()
+            session = nil
+            self.attachedPair = nil
+            for item in pendingItems {
+                scheduleWaitTimeout(for: item.id)
+            }
+        }
     }
 
     func attach(session: TranslationSession) {
+        let pair = LanguagePair(
+            source: session.sourceLanguage ?? requestedPair?.source ?? Locale.Language(identifier: "en"),
+            target: session.targetLanguage ?? requestedPair?.target ?? Locale.Language(identifier: "en")
+        )
+        if let attachedPair, attachedPair != pair {
+            self.session?.cancel()
+        }
         self.session = session
+        attachedPair = pair
+        requestedPair = pair
+        processNextIfIdle()
     }
 
     func translate(_ text: String) async -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, session != nil else { return nil }
+        guard !trimmed.isEmpty else { return nil }
         return await withCheckedContinuation { continuation in
-            pendingItems.append((trimmed, continuation))
+            let id = UUID()
+            pendingItems.append(PendingItem(id: id, text: trimmed, continuation: continuation))
+            scheduleWaitTimeout(for: id)
             processNextIfIdle()
         }
     }
 
+    /// 翻译会话由 SwiftUI 在视图出现后异步注入；首次识别往往早于注入完成，
+    /// 因此先排队等待会话，而不是立即判定翻译失败。
+    private func scheduleWaitTimeout(for id: UUID) {
+        guard session == nil else { return }
+        waitTimeouts[id]?.cancel()
+        waitTimeouts[id] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.expireWaitingItem(id)
+        }
+    }
+
+    private func expireWaitingItem(_ id: UUID) {
+        waitTimeouts.removeValue(forKey: id)
+        guard let index = pendingItems.firstIndex(where: { $0.id == id }) else { return }
+        let item = pendingItems.remove(at: index)
+        item.continuation.resume(returning: nil)
+        onTranslationError?("翻译服务尚未就绪，请稍后重试。")
+    }
+
     /// 串行处理队列，保证译文回填顺序与原文顺序一致
     private func processNextIfIdle() {
-        guard !isProcessing else { return }
+        guard !isProcessing, session != nil, !pendingItems.isEmpty else { return }
         isProcessing = true
-        Task { [weak self] in
-            defer { self?.isProcessing = false }
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.isProcessing = false }
             while !self.pendingItems.isEmpty {
                 let item = self.pendingItems.removeFirst()
+                self.waitTimeouts.removeValue(forKey: item.id)?.cancel()
+                guard let session = self.session else {
+                    // 会话在排队期间失效：放回队首，等待 translationTask 重新注入。
+                    self.pendingItems.insert(item, at: 0)
+                    self.scheduleWaitTimeout(for: item.id)
+                    break
+                }
                 do {
-                    let response = try await self.session?.translate(item.text)
-                    item.continuation.resume(returning: response?.targetText)
+                    let translated = try await self.performTranslation(item.text, using: session)
+                    item.continuation.resume(returning: translated)
                 } catch {
                     item.continuation.resume(returning: nil)
-                    self.onTranslationError?(error.localizedDescription)
+                    self.onTranslationError?(self.message(for: error))
                 }
             }
+        }
+    }
+
+    /// 系统翻译偶发 internalError，短暂等待后自动再试一次；用户取消或语言包缺失不重试。
+    private func performTranslation(_ text: String, using session: TranslationSession) async throws -> String {
+        do {
+            return try await session.translate(text).targetText
+        } catch {
+            guard isRetryable(error) else { throw error }
+            try await Task.sleep(nanoseconds: 300_000_000)
+            return try await session.translate(text).targetText
+        }
+    }
+
+    private func isRetryable(_ error: Error) -> Bool {
+        switch error {
+        case TranslationError.internalError:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func message(for error: Error) -> String {
+        switch error {
+        case TranslationError.notInstalled:
+            return "翻译语言包尚未安装，请允许下载后重试。"
+        case TranslationError.alreadyCancelled:
+            return "翻译会话已失效，请重试。"
+        case TranslationError.unsupportedLanguagePairing:
+            return "当前语言对不支持离线翻译，请更换语言后重试。"
+        default:
+            return error.localizedDescription
         }
     }
 }
