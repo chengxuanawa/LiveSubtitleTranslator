@@ -15,6 +15,7 @@ final class SystemAudioStreamServer: ObservableObject {
 
     private var listener: NWListener?
     private var connection: NWConnection?
+    private var disconnectTask: Task<Void, Never>?
     private var receiveBuffer = Data()
     private var audioFormat: AVAudioFormat?
 
@@ -63,10 +64,14 @@ final class SystemAudioStreamServer: ObservableObject {
     }
 
     func stop() {
-        connection?.cancel()
+        disconnectTask?.cancel()
+        disconnectTask = nil
+        let oldConnection = connection
         connection = nil
-        listener?.cancel()
+        oldConnection?.cancel()
+        let oldListener = listener
         listener = nil
+        oldListener?.cancel()
         receiveBuffer.removeAll()
         isWaitingForBroadcast = false
         isReceivingAudio = false
@@ -75,8 +80,11 @@ final class SystemAudioStreamServer: ObservableObject {
     // MARK: - 私有
 
     private func accept(_ connection: NWConnection) {
-        self.connection?.cancel()
+        disconnectTask?.cancel()
+        disconnectTask = nil
+        let oldConnection = self.connection
         self.connection = connection
+        oldConnection?.cancel()
         receiveBuffer.removeAll()
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             Task { @MainActor [weak self, weak connection] in
@@ -84,8 +92,13 @@ final class SystemAudioStreamServer: ObservableObject {
                 guard let self, let connection, self.connection === connection else { return }
                 switch state {
                 case .ready:
+                    self.disconnectTask?.cancel()
+                    self.disconnectTask = nil
                     self.isReceivingAudio = true
                     self.onStreamStarted?()
+                    // NWConnection 必须先进入 ready 才能接收数据；在 start 后立刻
+                    // 调用 receive 可能返回错误，把刚建立的广播误判为断开。
+                    self.receiveNext()
                 case .failed, .cancelled:
                     self.handleDisconnect()
                 default:
@@ -94,14 +107,14 @@ final class SystemAudioStreamServer: ObservableObject {
             }
         }
         connection.start(queue: DispatchQueue(label: "system.audio.connection"))
-        receiveNext()
     }
 
     private func receiveNext() {
         guard let connection else { return }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak connection] data, _, isComplete, error in
+            Task { @MainActor [weak self, weak connection] in
+                // 旧连接的接收回调可能晚于新连接到达，不能让它消费或断开新连接
+                guard let self, let connection, self.connection === connection else { return }
                 if let data, !data.isEmpty {
                     self.consume(data)
                 }
@@ -154,9 +167,18 @@ final class SystemAudioStreamServer: ObservableObject {
     }
 
     private func handleDisconnect() {
-        connection?.cancel()
+        guard connection != nil else { return }
+        let oldConnection = connection
         connection = nil
+        oldConnection?.cancel()
         isReceivingAudio = false
-        onStreamEnded?()
+        // 广播扩展断线后会自动重连，先留出宽限期；只有持续没有新连接才视为共享结束
+        disconnectTask?.cancel()
+        disconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, let self, self.connection == nil else { return }
+            self.disconnectTask = nil
+            self.onStreamEnded?()
+        }
     }
 }

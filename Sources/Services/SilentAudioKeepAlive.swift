@@ -11,7 +11,6 @@ final class SilentAudioKeepAlive {
     private var silentURL: URL?
 
     func start() {
-        guard player == nil else { return }
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
@@ -19,6 +18,11 @@ final class SilentAudioKeepAlive {
         } catch {
             return
         }
+        if let player, player.play() {
+            return
+        }
+        player?.stop()
+        self.player = nil
         guard let url = makeSilentWAV() else { return }
         do {
             let player = try AVAudioPlayer(contentsOf: url)

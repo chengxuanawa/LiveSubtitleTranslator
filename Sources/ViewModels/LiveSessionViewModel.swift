@@ -73,6 +73,8 @@ final class LiveSessionViewModel: ObservableObject {
     /// 本次录制自动生成的 AI 摘要（用于「AI 标题」）
     private var sessionSummary: String?
     private var locationTask: Task<Void, Never>?
+    /// 打开系统广播选择器后的保活超时：用户取消选择时回收静音播放器
+    private var broadcastPreparationTask: Task<Void, Never>?
 
     // MARK: - AI 分段缓冲
 
@@ -170,12 +172,31 @@ final class LiveSessionViewModel: ObservableObject {
 
     /// 系统音频模式进入页面时调用：保证广播扩展能连上本地端口
     func prepareSystemAudioServer() {
-        if !systemAudioServer.isWaitingForBroadcast {
+        if !systemAudioServer.isWaitingForBroadcast && !systemAudioServer.isReceivingAudio {
             _ = systemAudioServer.start()
         }
         isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
-        if !isWaitingForBroadcast {
+        if !isWaitingForBroadcast && !systemAudioServer.isReceivingAudio {
             errorMessage = "无法启动系统音频通道（本地端口被占用），请稍后重试。"
+        }
+    }
+
+    /// 打开系统广播选择器前调用：先启动本地监听和静音保活。
+    /// App 在系统选择器出现后会立即进入后台，等到广播连上再启动保活可能已经被挂起。
+    func prepareSystemAudioBroadcast() {
+        prepareSystemAudioServer()
+        guard state != .listening else {
+            // 结束共享时也要保持音频会话，直到系统控件真正停止广播
+            keepAlive.start()
+            return
+        }
+        keepAlive.start()
+        broadcastPreparationTask?.cancel()
+        broadcastPreparationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            guard !Task.isCancelled, let self, self.state != .listening else { return }
+            self.keepAlive.stop()
+            self.broadcastPreparationTask = nil
         }
     }
 
@@ -254,6 +275,9 @@ final class LiveSessionViewModel: ObservableObject {
         isWaitingForBroadcast = false
         guard state != .listening else { return }
 
+        broadcastPreparationTask?.cancel()
+        broadcastPreparationTask = nil
+
         errorMessage = nil
         isRecognitionPaused = false
         segments = []
@@ -292,6 +316,8 @@ final class LiveSessionViewModel: ObservableObject {
 
     func stop() {
         isRecognitionPaused = false
+        broadcastPreparationTask?.cancel()
+        broadcastPreparationTask = nil
         speechRecognizer.stop()
         // 结束前把还没被 AI 整理的片段直接落库，避免丢失
         flushPendingBuffer()
@@ -403,6 +429,8 @@ final class LiveSessionViewModel: ObservableObject {
     // MARK: - 私有
 
     private func handleError(_ message: String) {
+        broadcastPreparationTask?.cancel()
+        broadcastPreparationTask = nil
         errorMessage = message
         isRecognitionPaused = false
         flushPendingBuffer()

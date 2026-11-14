@@ -48,8 +48,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
             guard let self else { return }
             self.isBroadcasting = false
             self.reconnectScheduled = false
-            self.connection?.cancel()
+            let oldConnection = self.connection
             self.connection = nil
+            oldConnection?.cancel()
             self.setConnected(false)
         }
     }
@@ -79,7 +80,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private func connect() {
         guard isBroadcasting else { return }
         guard let port = NWEndpoint.Port(rawValue: AudioStreamProtocol.port) else { return }
-        connection?.cancel()
+        let oldConnection = connection
+        connection = nil
+        oldConnection?.cancel()
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let connection = NWConnection(host: "127.0.0.1", port: port, using: parameters)
@@ -114,7 +117,14 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     private func send(_ packet: Data) {
         guard let connection, connected else { return }
-        connection.send(content: packet, completion: .contentProcessed { _ in })
+        connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
+            guard let self, let connection, error != nil, self.connection === connection else { return }
+            // 发送失败说明连接已经不可用，主动标记断线并重连，避免录屏还在跑但没有音频
+            self.queue.async {
+                self.setConnected(false)
+                self.scheduleReconnect()
+            }
+        })
     }
 
     // MARK: - 音频转换与打包

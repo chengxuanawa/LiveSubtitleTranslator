@@ -59,6 +59,9 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
     private var isTapInstalled = false
     private var isRunning = false
+    private var isExternalAudio = false
+    /// 首帧音频可能早于识别会话就绪到达：先缓存，启动后立即补喂，避免开头整段丢失
+    private var externalAudioBacklog: [AVAudioPCMBuffer] = []
     private var sessionStartDate = Date()
     private var latestPartialText = ""
     private var lastSegmentEnd: TimeInterval = 0
@@ -67,6 +70,8 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
     func start() async {
         tearDown()
+        isExternalAudio = false
+        externalAudioBacklog.removeAll()
 
         guard await AVAudioApplication.requestRecordPermission() else {
             onError?("未获得麦克风权限，请到系统设置中授权。")
@@ -74,6 +79,7 @@ final class SpeechRecognizerService: SpeechRecognizing {
         }
 
         guard let setup = await prepareAnalyzer() else { return }
+        self.analyzer = setup.analyzer
 
         sessionStartDate = Date()
         lastSegmentEnd = 0
@@ -154,6 +160,8 @@ final class SpeechRecognizerService: SpeechRecognizing {
         }
         latestPartialText = ""
         isRunning = false
+        isExternalAudio = false
+        externalAudioBacklog.removeAll()
 
         inputContinuation?.finish()
         inputContinuation = nil
@@ -184,8 +192,13 @@ final class SpeechRecognizerService: SpeechRecognizing {
     // MARK: - 系统共享音频
 
     func startExternalAudio() async {
-        tearDown()
-        guard let setup = await prepareAnalyzer() else { return }
+        isExternalAudio = true
+        stopExternalAudio(preserveBufferedAudio: true)
+        guard let setup = await prepareAnalyzer() else {
+            stopExternalAudio()
+            return
+        }
+        self.analyzer = setup.analyzer
 
         sessionStartDate = Date()
         lastSegmentEnd = 0
@@ -196,13 +209,53 @@ final class SpeechRecognizerService: SpeechRecognizing {
             try await beginAnalysis(setup)
         } catch {
             onError?("语音识别启动失败：\(error.localizedDescription)")
-            tearDown()
+            stopExternalAudio()
             return
         }
+        flushExternalAudioBacklog()
+    }
+
+    /// 系统共享音频模式只释放识别资源，不关闭 App 的音频会话：
+    /// 广播期间主 App 在后台，保活播放器仍需要这个会话来避免被系统挂起。
+    private func stopExternalAudio(preserveBufferedAudio: Bool = false) {
+        isRunning = false
+        isExternalAudio = preserveBufferedAudio
+        if !preserveBufferedAudio {
+            externalAudioBacklog.removeAll()
+        }
+        latestPartialText = ""
+        inputContinuation?.finish()
+        inputContinuation = nil
+        resultsTask?.cancel()
+        resultsTask = nil
+
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        if isTapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            isTapInstalled = false
+        }
+
+        let analyzer = self.analyzer
+        Task {
+            await analyzer?.cancelAndFinishNow()
+        }
+
+        self.analyzer = nil
+        analyzerFormat = nil
+        externalConverter = nil
+        externalInputFormat = nil
     }
 
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard isRunning, let continuation = inputContinuation else { return }
+        guard isRunning, let continuation = inputContinuation else {
+            externalAudioBacklog.append(buffer)
+            if externalAudioBacklog.count > 64 {
+                externalAudioBacklog.removeFirst(externalAudioBacklog.count - 64)
+            }
+            return
+        }
 
         let targetFormat = analyzerFormat ?? buffer.format
         if externalConverter == nil
@@ -214,6 +267,14 @@ final class SpeechRecognizerService: SpeechRecognizing {
         guard let converter = externalConverter,
               let converted = Self.convert(buffer, using: converter, to: targetFormat) else { return }
         continuation.yield(AnalyzerInput(buffer: converted))
+    }
+
+    private func flushExternalAudioBacklog() {
+        let pending = externalAudioBacklog
+        externalAudioBacklog.removeAll()
+        for buffer in pending {
+            appendExternalBuffer(buffer)
+        }
     }
 
     // MARK: - 引擎准备
@@ -257,7 +318,6 @@ final class SpeechRecognizerService: SpeechRecognizing {
         if let analyzerFormat {
             try? await analyzer.prepareToAnalyze(in: analyzerFormat)
         }
-        self.analyzer = analyzer
         return (analyzer, transcriber)
     }
 
@@ -290,7 +350,11 @@ final class SpeechRecognizerService: SpeechRecognizing {
                 await MainActor.run {
                     guard let self, self.isRunning else { return }
                     self.onError?("识别中断：\(error.localizedDescription)")
-                    self.tearDown()
+                    if self.isExternalAudio {
+                        self.stopExternalAudio()
+                    } else {
+                        self.tearDown()
+                    }
                 }
             }
         }
@@ -311,6 +375,8 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
     private func tearDown() {
         isRunning = false
+        isExternalAudio = false
+        externalAudioBacklog.removeAll()
         latestPartialText = ""
         inputContinuation?.finish()
         inputContinuation = nil

@@ -600,6 +600,8 @@ struct LiveCaptionsView: View {
     /// 系统共享音频主按钮：自定义蓝色玻璃外观，点击后程序化弹出系统广播选择器
     private var systemAudioButton: some View {
         Button {
+            // 广播开始后 App 可能立刻退到后台，提前启动静音保活，避免本地监听被挂起
+            viewModel.prepareSystemAudioBroadcast()
             BroadcastPickerTrigger.shared.trigger()
         } label: {
             Image(systemName: "dot.radiowaves.left.and.right")
@@ -643,6 +645,7 @@ struct LiveCaptionsView: View {
         Button {
             // 录屏模式无法由 App 直接停止系统广播：先弹出系统共享控件，
             // 用户在控件里结束共享后，检测到音频流断开会自动收尾
+            viewModel.prepareSystemAudioBroadcast()
             BroadcastPickerTrigger.shared.trigger()
         } label: {
             Image(systemName: "stop.fill")
