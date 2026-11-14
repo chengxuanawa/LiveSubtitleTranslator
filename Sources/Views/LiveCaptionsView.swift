@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 实时字幕主界面：顶部大字幕 + 分段记录 + 悬浮控制栏（麦克风 / 系统共享音频）
 struct LiveCaptionsView: View {
@@ -18,10 +19,16 @@ struct LiveCaptionsView: View {
     @State private var tailSettled = true
     /// 逐字吐字任务
     @State private var revealTask: Task<Void, Never>?
-    /// 用户滑动列表时临时暂停自动滚动
+    /// 用户滑离底部后保持固定，默认不再自动拉回
     @State private var autoScrollLocked = false
+    /// 可选的自动回到实时倒计时（0 表示一直固定）
     @State private var autoScrollUnlockTask: Task<Void, Never>?
-    @AppStorage("autoScrollLockSeconds") private var autoScrollLockSeconds: Double = 6
+    @AppStorage("autoScrollResumeSeconds") private var autoScrollResumeSeconds: Double = 0
+    /// 调整时间时显示的气泡
+    @State private var showLockTimePopup = false
+    @State private var lockTimePopupTask: Task<Void, Never>?
+    /// 拖动波形图标设定时间的起始值
+    @State private var lockTimeDragStart: Double?
 
     var body: some View {
         GeometryReader { proxy in
@@ -274,11 +281,19 @@ struct LiveCaptionsView: View {
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 8)
-                    .onChanged { _ in
-                        // 用户手动滑动时暂停自动跟随，避免被新文字拉回底部
+                    .onChanged { value in
+                        // 仅上下拖动时固定列表；用户自己滑回底部后自动解除
+                        guard abs(value.translation.height) > abs(value.translation.width) else { return }
                         lockAutoScroll(proxy)
                     }
             )
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
+            } action: { _, distanceToBottom in
+                guard autoScrollLocked, distanceToBottom < 16 else { return }
+                autoScrollUnlockTask?.cancel()
+                autoScrollLocked = false
+            }
             .onAppear {
                 scrollToBottom(proxy, animated: false, force: true)
             }
@@ -302,7 +317,6 @@ struct LiveCaptionsView: View {
                 ZStack(alignment: .trailing) {
                     if autoScrollLocked, viewModel.state == .listening {
                         autoScrollLockControl(proxy)
-                            .padding(.trailing, 8)
                             .padding(.bottom, isLandscape ? 24 : 120)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
@@ -333,17 +347,18 @@ struct LiveCaptionsView: View {
         }
     }
 
-    /// 开始或重置自动滚动锁定倒计时（仅在识别期间生效）
+    /// 开始或重置回到实时的倒计时；时间为 0 时保持固定，不自动返回
     private func lockAutoScroll(_ proxy: ScrollViewProxy) {
         guard viewModel.state == .listening else { return }
         autoScrollLocked = true
         autoScrollUnlockTask?.cancel()
-        let seconds = max(1, autoScrollLockSeconds)
+        let seconds = autoScrollResumeSeconds
+        guard seconds >= 1 else { return }
         autoScrollUnlockTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             autoScrollLocked = false
-            // 锁定结束平滑滑回最新位置，而不是等下一段文字突然拉过去
+            // 倒计时结束平滑滑回最新位置，而不是等下一段文字突然拉过去
             scrollToBottom(proxy, animated: true, force: true, duration: 0.5)
         }
     }
@@ -354,69 +369,108 @@ struct LiveCaptionsView: View {
         scrollToBottom(proxy, animated: true, force: true)
     }
 
-    /// 右侧弹出的锁定时间调节条：上下滑动设置暂停自动跟随的秒数
+    /// 右侧悬浮控制：上方波形图标拖动设定自动返回秒数，下方突起箭头一键回到最新
     private func autoScrollLockControl(_ proxy: ScrollViewProxy) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: "lock.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            verticalLockSlider(proxy)
-                .frame(width: 28, height: 110)
-
-            Text("\(Int(autoScrollLockSeconds))s")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            Button {
-                resumeAutoScroll(proxy)
-            } label: {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.title3)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("回到最新")
+            waveTimeHandle(proxy)
+            returnToLatestTab(proxy)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 12)
-        .glassEffect(.regular, in: Capsule())
     }
 
-    private func verticalLockSlider(_ proxy: ScrollViewProxy) -> some View {
-        GeometryReader { geometry in
-            let height = geometry.size.height
-            let fraction = CGFloat((autoScrollLockSeconds - 1) / 29)
-            ZStack(alignment: .bottom) {
-                Capsule()
-                    .fill(Color.primary.opacity(0.12))
-                    .frame(width: 4)
-                    .frame(maxHeight: .infinity)
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [.cyan, .blue, .purple],
-                            startPoint: .bottom,
-                            endPoint: .top
-                        )
-                    )
-                    .frame(width: 4, height: max(4, height * fraction))
-                Circle()
-                    .fill(.white)
-                    .frame(width: 14, height: 14)
-                    .shadow(color: .black.opacity(0.18), radius: 2)
-                    .offset(y: -(height - 14) * fraction)
+    private var lockTimeText: String {
+        autoScrollResumeSeconds >= 1 ? "\(Int(autoScrollResumeSeconds)) 秒" : "一直固定"
+    }
+
+    /// 波形图标：上下拖动调时间，点按给出触感反馈并弹出当前时间
+    private func waveTimeHandle(_ proxy: ScrollViewProxy) -> some View {
+        Image(systemName: "waveform")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.primary)
+            .frame(width: 34, height: 44)
+            .background {
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 17,
+                    bottomLeadingRadius: 17,
+                    style: .continuous
+                )
+                .fill(.ultraThinMaterial)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
+            .onTapGesture {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showLockTimePopupBriefly()
+            }
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 4)
                     .onChanged { value in
-                        let newFraction = 1 - value.location.y / height
-                        let seconds = 1 + Double(round(Double(newFraction) * 29))
-                        autoScrollLockSeconds = min(30, max(1, seconds))
+                        if lockTimeDragStart == nil {
+                            lockTimeDragStart = autoScrollResumeSeconds
+                            showLockTimePopupBriefly(hold: true)
+                        }
+                        let start = lockTimeDragStart ?? 0
+                        let seconds = (start - value.translation.height / 3).rounded()
+                        let clamped = min(30, max(0, seconds))
+                        guard clamped != autoScrollResumeSeconds else { return }
+                        autoScrollResumeSeconds = clamped
+                        UISelectionFeedbackGenerator().selectionChanged()
                         lockAutoScroll(proxy)
                     }
+                    .onEnded { _ in
+                        lockTimeDragStart = nil
+                        showLockTimePopupBriefly()
+                    }
             )
+            .overlay(alignment: .leading) {
+                if showLockTimePopup {
+                    Text(lockTimeText)
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .glassEffect(.regular, in: Capsule())
+                        .fixedSize()
+                        .offset(x: -58)
+                        .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .trailing)))
+                }
+            }
+            .accessibilityLabel("自动回到实时时间：\(lockTimeText)")
+    }
+
+    /// 从右边缘突起的箭头：点击回到最新字幕并解除固定
+    private func returnToLatestTab(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            resumeAutoScroll(proxy)
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 34, height: 40)
+                .background {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 16,
+                        bottomLeadingRadius: 16,
+                        style: .continuous
+                    )
+                    .fill(.ultraThinMaterial)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("回到最新")
+    }
+
+    /// 弹出时间气泡并自动收起；拖动期间保持显示
+    private func showLockTimePopupBriefly(hold: Bool = false) {
+        lockTimePopupTask?.cancel()
+        withAnimation(.snappy(duration: 0.18)) {
+            showLockTimePopup = true
+        }
+        guard !hold else { return }
+        lockTimePopupTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                showLockTimePopup = false
+            }
         }
     }
 
