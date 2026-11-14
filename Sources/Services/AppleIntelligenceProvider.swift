@@ -15,7 +15,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
 
     func summarize(_ text: String) async throws -> String? {
         let response = try await summarizeSessionValue().respond(
-            to: "请只对以下字幕做压缩归纳，不要新增或改写内容：\n\n\(text)",
+            to: "请综合下面的原文与译文做压缩归纳，摘要必须使用原文的语言，不要翻译成译文的语言；不要新增或改写内容：\n\n\(text)",
             options: GenerationOptions(temperature: 0.1)
         )
         return AITextSanitizer.plainText(response.content)
