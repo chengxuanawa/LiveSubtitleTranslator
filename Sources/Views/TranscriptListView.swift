@@ -206,27 +206,19 @@ private struct TranscriptDetailView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        // 彩色氛围铺满整个摘要框：低透明角向渐变缓慢旋转
+        // 彩色氛围铺满整个摘要框：网格渐变缓慢漂移，避免角向渐变旋转出明显形状
         .background {
-            TimelineView(.animation(minimumInterval: 0.06)) { context in
-                let phase = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 6) / 6
-                let angle = Angle.degrees(phase * 360)
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(
-                        AngularGradient(
-                            colors: [
-                                Color.cyan.opacity(0.20),
-                                Color.blue.opacity(0.14),
-                                Color.purple.opacity(0.20),
-                                Color.pink.opacity(0.16),
-                                Color.cyan.opacity(0.20),
-                            ],
-                            center: .center,
-                            startAngle: angle,
-                            endAngle: angle + .degrees(360)
-                        )
-                    )
+            TimelineView(.animation(minimumInterval: 0.08)) { context in
+                let time = context.date.timeIntervalSinceReferenceDate
+                ZStack {
+                    // 外圈光晕：同一片网格渐变放大模糊，颜色过渡不出边缘
+                    summaryMesh(time: time)
+                        .blur(radius: 24)
+                        .opacity(0.9)
+                        .padding(-10)
+                    summaryMesh(time: time)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                }
             }
         }
         // 描边流光：速度回退到 6 秒一圈，线条收细
@@ -253,35 +245,44 @@ private struct TranscriptDetailView: View {
                     )
             }
         }
-        // 氛围光：卡片四周的彩色光晕，与描边同步旋转
-        .background {
-            TimelineView(.animation(minimumInterval: 0.06)) { context in
-                let phase = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 6) / 6
-                let angle = Angle.degrees(phase * 360)
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(
-                        AngularGradient(
-                            colors: [
-                                Color.cyan.opacity(0.45),
-                                Color.blue.opacity(0.30),
-                                Color.purple.opacity(0.42),
-                                Color.pink.opacity(0.38),
-                                Color.cyan.opacity(0.45),
-                            ],
-                            center: .center,
-                            startAngle: angle,
-                            endAngle: angle + .degrees(360)
-                        )
-                    )
-                    .blur(radius: 26)
-                    .opacity(0.55)
-                    .padding(-8)
-            }
-        }
+        // 氛围光已合并进上方的网格渐变背景，避免再叠一层旋转色块
         .shadow(color: Color.purple.opacity(0.18), radius: 16, x: 0, y: 8)
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 2)
+    }
+
+    /// 摘要卡片的彩色氛围：3×3 网格渐变的控制点按正弦缓慢漂移，
+    /// 只改变色块形状、不产生整体旋转，看起来是颜色在流动而不是有形状在转
+    private func summaryMesh(time: Double) -> MeshGradient {
+        func drift(_ phase: Double, _ amplitude: Double) -> Float {
+            Float(0.5 + sin(time * 0.28 + phase) * amplitude)
+        }
+        return MeshGradient(
+            width: 3,
+            height: 3,
+            points: [
+                SIMD2<Float>(0, 0),
+                SIMD2<Float>(drift(0, 0.10), 0),
+                SIMD2<Float>(1, 0),
+                SIMD2<Float>(0, drift(1.4, 0.10)),
+                SIMD2<Float>(drift(2.1, 0.08), drift(0.7, 0.08)),
+                SIMD2<Float>(1, drift(2.9, 0.10)),
+                SIMD2<Float>(0, 1),
+                SIMD2<Float>(drift(3.6, 0.10), 1),
+                SIMD2<Float>(1, 1),
+            ],
+            colors: [
+                Color.cyan.opacity(0.30),
+                Color.blue.opacity(0.24),
+                Color.purple.opacity(0.28),
+                Color.blue.opacity(0.24),
+                Color.pink.opacity(0.30),
+                Color.cyan.opacity(0.28),
+                Color.purple.opacity(0.28),
+                Color.pink.opacity(0.30),
+                Color.cyan.opacity(0.26),
+            ]
+        )
     }
 }
