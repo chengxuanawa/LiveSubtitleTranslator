@@ -173,7 +173,7 @@ private struct TranscriptDetailView: View {
         }
     }
 
-    /// AI 摘要卡片：保留彩色渐变底色，去掉外层模糊遮罩，只让描边流光更明显
+    /// AI 摘要卡片：去掉毛玻璃遮罩，保留彩色渐变底、四周彩色光晕与实时流光描边
     private func summaryCard(_ summary: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -206,25 +206,21 @@ private struct TranscriptDetailView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        // 彩色渐变底色：保留卡片自身的玻璃底与彩色渐变
+        // 彩色渐变底色：只保留渐变，不用毛玻璃材质盖住背景
         .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.cyan.opacity(0.16),
-                                Color.blue.opacity(0.10),
-                                Color.purple.opacity(0.16),
-                                Color.pink.opacity(0.12),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.cyan.opacity(0.16),
+                            Color.blue.opacity(0.10),
+                            Color.purple.opacity(0.16),
+                            Color.pink.opacity(0.12),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
-            }
+                )
         }
         // 彩色流光：角向渐变旋转，同时叠一层模糊描边做发光，流动更明显
         .overlay {
@@ -252,6 +248,32 @@ private struct TranscriptDetailView: View {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .strokeBorder(gradient, lineWidth: 2.4)
                 }
+            }
+        }
+        // 氛围光：卡片四周的彩色光晕，与描边同步旋转（不要移除，否则背景没有彩色光）
+        .background {
+            TimelineView(.animation(minimumInterval: 0.06)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 4) / 4
+                let angle = Angle.degrees(phase * 360)
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(
+                        AngularGradient(
+                            colors: [
+                                Color.cyan.opacity(0.45),
+                                Color.blue.opacity(0.30),
+                                Color.purple.opacity(0.42),
+                                Color.pink.opacity(0.38),
+                                Color.cyan.opacity(0.45),
+                            ],
+                            center: .center,
+                            startAngle: angle,
+                            endAngle: angle + .degrees(360)
+                        )
+                    )
+                    .blur(radius: 26)
+                    .opacity(0.55)
+                    .padding(-8)
             }
         }
         .shadow(color: Color.purple.opacity(0.18), radius: 16, x: 0, y: 8)
