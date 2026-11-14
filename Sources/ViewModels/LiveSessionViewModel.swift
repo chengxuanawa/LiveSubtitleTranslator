@@ -109,6 +109,9 @@ final class LiveSessionViewModel: ObservableObject {
             self?.isPictureInPictureActive = active
         }
         wireCallbacks()
+        // App 启动即开始监听系统音频端口：即使用户在其他页签或从控制中心
+        // 直接开始共享，广播扩展也能连上，不会因为页面未出现而检测不到
+        _ = systemAudioServer.start()
     }
 
     private func wireCallbacks() {
@@ -123,8 +126,14 @@ final class LiveSessionViewModel: ObservableObject {
         }
 
         systemAudioServer.onAudioBuffer = { [weak self] buffer in
+            guard let self else { return }
+            // 兜底检测：只要真的有共享音频进来，就视为广播已开始，
+            // 避免连接就绪回调遗漏导致界面一直停在未开始状态
+            if self.state != .listening {
+                self.handleBroadcastStarted()
+            }
             // 暂停时直接丢弃音频，广播与录屏不受影响
-            guard let self, !self.isRecognitionPaused else { return }
+            guard !self.isRecognitionPaused else { return }
             self.speechRecognizer.appendExternalBuffer(buffer)
         }
         systemAudioServer.onStreamStarted = { [weak self] in

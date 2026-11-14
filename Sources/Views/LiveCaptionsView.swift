@@ -9,6 +9,8 @@ struct LiveCaptionsView: View {
     @EnvironmentObject private var aiService: AIService
     /// 横屏兜底判断：部分情况下窗口尺寸更新滞后，紧凑高度也视为横屏
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// 回到前台时重新确认本地音频监听是否还在
+    @Environment(\.scenePhase) private var scenePhase
 
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
     private let bottomAnchorID = "transcript-bottom"
@@ -75,6 +77,12 @@ struct LiveCaptionsView: View {
             }
             .onChange(of: settings.keepScreenOnWhileRecognizing) { _, _ in
                 viewModel.refreshIdleTimer()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // App 被挂起期间广播可能已开始，回到前台后重建失效的监听器
+                if phase == .active {
+                    viewModel.prepareSystemAudioServer()
+                }
             }
             .onDisappear {
                 revealTask?.cancel()
@@ -509,16 +517,17 @@ struct LiveCaptionsView: View {
 
             HStack(spacing: 10) {
                 if viewModel.state == .listening {
-                    HStack(spacing: 8) {
-                        liveActivityButton
-                        pipButton
-                        if viewModel.audioSourceMode == .systemAudio {
-                            pauseButton
-                                .transition(.scale.combined(with: .opacity))
+                    // 液态玻璃容器：每个按钮独立响应按压形变，相邻玻璃自动融合成胶囊
+                    GlassEffectContainer(spacing: 8) {
+                        HStack(spacing: 8) {
+                            liveActivityButton
+                            pipButton
+                            if viewModel.audioSourceMode == .systemAudio {
+                                pauseButton
+                                    .transition(.scale.combined(with: .opacity))
+                            }
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .glassEffect(.regular, in: Capsule())
 
                     translateToggle
                         .transition(
@@ -534,7 +543,8 @@ struct LiveCaptionsView: View {
                     .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.state)
-            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)        }
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)
+        }
     }
 
     /// 音频来源切换：麦克风模式下显示红色圆点，系统共享音频模式下显示麦克风图标
@@ -675,6 +685,7 @@ struct LiveCaptionsView: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
         .accessibilityLabel(viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕")
     }
 
@@ -689,6 +700,7 @@ struct LiveCaptionsView: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
         .accessibilityLabel(viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕")
     }
 
@@ -704,6 +716,7 @@ struct LiveCaptionsView: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
         .accessibilityLabel(viewModel.isRecognitionPaused ? "继续识别" : "暂停识别")
     }
 

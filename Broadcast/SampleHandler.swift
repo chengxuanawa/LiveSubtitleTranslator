@@ -8,15 +8,35 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     private let queue = DispatchQueue(label: "com.example.livesubtitletranslator.broadcast.audio")
     private var connection: NWConnection?
+    /// 连接状态会跨线程读取（采样回调 / 网络队列），用锁保护
+    private let stateLock = NSLock()
     private var isConnected = false
+    private var isBroadcasting = false
+    private var reconnectScheduled = false
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private var targetFormat: AVAudioFormat?
 
+    private var connected: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isConnected
+    }
+
+    private func setConnected(_ value: Bool) {
+        stateLock.lock()
+        isConnected = value
+        stateLock.unlock()
+    }
+
     // MARK: - 广播生命周期
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
-        connect()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.isBroadcasting = true
+            self.connect()
+        }
     }
 
     override func broadcastPaused() {}
@@ -24,36 +44,55 @@ final class SampleHandler: RPBroadcastSampleHandler {
     override func broadcastResumed() {}
 
     override func broadcastFinished() {
-        connection?.cancel()
-        connection = nil
-        isConnected = false
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.isBroadcasting = false
+            self.reconnectScheduled = false
+            self.connection?.cancel()
+            self.connection = nil
+            self.setConnected(false)
+        }
     }
 
     // MARK: - 采样处理
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
         guard sampleBufferType == .audioApp || sampleBufferType == .audioMic else { return }
-        guard isConnected else { return }
+        guard connected else {
+            // 还没连上主 App 时尝试补连，避免首次连接失败后再也不重试
+            queue.async { [weak self] in
+                self?.scheduleReconnect()
+            }
+            return
+        }
         autoreleasepool {
             guard let packet = makePacket(from: sampleBuffer) else { return }
-            send(packet)
+            // 发送放到串行队列，保证线程安全与音频包顺序
+            queue.async { [weak self] in
+                self?.send(packet)
+            }
         }
     }
 
     // MARK: - 网络
 
     private func connect() {
+        guard isBroadcasting else { return }
         guard let port = NWEndpoint.Port(rawValue: AudioStreamProtocol.port) else { return }
+        connection?.cancel()
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let connection = NWConnection(host: "127.0.0.1", port: port, using: parameters)
         self.connection = connection
-        connection.stateUpdateHandler = { [weak self] state in
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self, let connection, self.connection === connection else { return }
             switch state {
             case .ready:
-                self?.isConnected = true
+                self.setConnected(true)
             case .failed, .cancelled, .waiting:
-                self?.isConnected = false
+                self.setConnected(false)
+                // 主 App 的本地监听可能还没就绪或被系统挂起，1 秒后自动重连
+                self.scheduleReconnect()
             default:
                 break
             }
@@ -61,8 +100,20 @@ final class SampleHandler: RPBroadcastSampleHandler {
         connection.start(queue: queue)
     }
 
+    /// 主 App 尚未开始监听时持续重试，直到连接成功或广播结束
+    private func scheduleReconnect() {
+        guard isBroadcasting, !reconnectScheduled else { return }
+        reconnectScheduled = true
+        queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            self.reconnectScheduled = false
+            guard self.isBroadcasting, !self.connected else { return }
+            self.connect()
+        }
+    }
+
     private func send(_ packet: Data) {
-        guard let connection, isConnected else { return }
+        guard let connection, connected else { return }
         connection.send(content: packet, completion: .contentProcessed { _ in })
     }
 

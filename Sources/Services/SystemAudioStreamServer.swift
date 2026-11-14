@@ -21,9 +21,15 @@ final class SystemAudioStreamServer: ObservableObject {
     /// 开始监听广播连接；返回是否成功
     @discardableResult
     func start() -> Bool {
-        if listener != nil {
-            isWaitingForBroadcast = true
-            return true
+        if let listener {
+            // 监听器可能已被系统取消/失败，这种情况下要重建，否则会一直“假等待”
+            switch listener.state {
+            case .failed, .cancelled:
+                self.listener = nil
+            default:
+                isWaitingForBroadcast = true
+                return true
+            }
         }
         guard let port = NWEndpoint.Port(rawValue: AudioStreamProtocol.port) else { return false }
         do {
@@ -33,6 +39,17 @@ final class SystemAudioStreamServer: ObservableObject {
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor [weak self] in
                     self?.accept(connection)
+                }
+            }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                Task { @MainActor [weak self, weak listener] in
+                    guard let self, let listener, self.listener === listener else { return }
+                    if case .failed = state {
+                        listener.cancel()
+                        self.listener = nil
+                        self.isWaitingForBroadcast = false
+                        self.isReceivingAudio = false
+                    }
                 }
             }
             listener.start(queue: DispatchQueue(label: "system.audio.listener"))
@@ -60,14 +77,17 @@ final class SystemAudioStreamServer: ObservableObject {
     private func accept(_ connection: NWConnection) {
         self.connection?.cancel()
         self.connection = connection
-        connection.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor [weak self] in
+        receiveBuffer.removeAll()
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            Task { @MainActor [weak self, weak connection] in
+                // 旧连接被取消时不能影响新连接，否则会把刚建立的流一起断掉
+                guard let self, let connection, self.connection === connection else { return }
                 switch state {
                 case .ready:
-                    self?.isReceivingAudio = true
-                    self?.onStreamStarted?()
+                    self.isReceivingAudio = true
+                    self.onStreamStarted?()
                 case .failed, .cancelled:
-                    self?.handleDisconnect()
+                    self.handleDisconnect()
                 default:
                     break
                 }
