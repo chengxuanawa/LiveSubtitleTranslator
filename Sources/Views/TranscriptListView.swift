@@ -173,7 +173,7 @@ private struct TranscriptDetailView: View {
         }
     }
 
-    /// AI 摘要卡片：与对话气泡区分开——更大圆角、玻璃底、彩色描边与周围氛围光
+    /// AI 摘要卡片：保留彩色渐变底色，去掉外层模糊遮罩，只让描边流光更明显
     private func summaryCard(_ summary: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -206,6 +206,7 @@ private struct TranscriptDetailView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+        // 彩色渐变底色：保留卡片自身的玻璃底与彩色渐变
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -225,54 +226,32 @@ private struct TranscriptDetailView: View {
                     )
             }
         }
+        // 彩色流光：角向渐变旋转，同时叠一层模糊描边做发光，流动更明显
         .overlay {
-            // 彩色描边实时流动：角向渐变缓慢旋转，形成沿边框游走的光
-            TimelineView(.animation(minimumInterval: 0.06)) { context in
+            TimelineView(.animation(minimumInterval: 0.05)) { context in
                 let phase = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 6) / 6
+                    .truncatingRemainder(dividingBy: 4) / 4
                 let angle = Angle.degrees(phase * 360)
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(
-                        AngularGradient(
-                            colors: [
-                                Color.cyan.opacity(0.85),
-                                Color.blue.opacity(0.45),
-                                Color.purple.opacity(0.75),
-                                Color.pink.opacity(0.85),
-                                Color.cyan.opacity(0.85),
-                            ],
-                            center: .center,
-                            startAngle: angle,
-                            endAngle: angle + .degrees(360)
-                        ),
-                        lineWidth: 1.2
-                    )
-            }
-        }
-        // 氛围光：与描边同步旋转的彩色光晕，让卡片整体“活”起来
-        .background {
-            TimelineView(.animation(minimumInterval: 0.06)) { context in
-                let phase = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 6) / 6
-                let angle = Angle.degrees(phase * 360)
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(
-                        AngularGradient(
-                            colors: [
-                                Color.cyan.opacity(0.45),
-                                Color.blue.opacity(0.30),
-                                Color.purple.opacity(0.42),
-                                Color.pink.opacity(0.38),
-                                Color.cyan.opacity(0.45),
-                            ],
-                            center: .center,
-                            startAngle: angle,
-                            endAngle: angle + .degrees(360)
-                        )
-                    )
-                    .blur(radius: 26)
-                    .opacity(0.55)
-                    .padding(-8)
+                let gradient = AngularGradient(
+                    colors: [
+                        Color.cyan,
+                        Color.blue,
+                        Color.purple,
+                        Color.pink,
+                        Color.cyan,
+                    ],
+                    center: .center,
+                    startAngle: angle,
+                    endAngle: angle + .degrees(360)
+                )
+                ZStack {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(gradient, lineWidth: 10)
+                        .blur(radius: 10)
+                        .opacity(0.85)
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(gradient, lineWidth: 2.4)
+                }
             }
         }
         .shadow(color: Color.purple.opacity(0.18), radius: 16, x: 0, y: 8)
