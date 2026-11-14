@@ -115,7 +115,8 @@ private struct TranscriptDetailView: View {
             }
             .padding(.vertical, 12)
         }
-        .background(Color(.systemGroupedBackground))
+        // 与实时字幕页一致：用系统背景色作底，气泡的 secondary 底色和描边才清晰
+        .background(Color(.systemBackground))
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
         .softTopEdgeEffect()

@@ -38,6 +38,8 @@ final class LiveSessionViewModel: ObservableObject {
     @Published private(set) var isLiveActivityActive = false
     /// 系统音频模式下是否正在等待广播连接
     @Published private(set) var isWaitingForBroadcast = false
+    /// 系统音频识别是否已暂停（录屏广播保持不断开，只是不再喂入识别）
+    @Published private(set) var isRecognitionPaused = false
     /// 画中画字幕是否已激活
     @Published private(set) var isPictureInPictureActive = false
 
@@ -121,7 +123,9 @@ final class LiveSessionViewModel: ObservableObject {
         }
 
         systemAudioServer.onAudioBuffer = { [weak self] buffer in
-            self?.speechRecognizer.appendExternalBuffer(buffer)
+            // 暂停时直接丢弃音频，广播与录屏不受影响
+            guard let self, !self.isRecognitionPaused else { return }
+            self.speechRecognizer.appendExternalBuffer(buffer)
         }
         systemAudioServer.onStreamStarted = { [weak self] in
             self?.handleBroadcastStarted()
@@ -198,11 +202,23 @@ final class LiveSessionViewModel: ObservableObject {
         pipController.update(original: preview, translated: nil)
     }
 
+    /// 暂停 / 继续系统共享音频的识别；广播与录屏保持运行，不中断采集
+    func toggleRecognitionPause() {
+        guard state == .listening, audioSourceMode == .systemAudio else { return }
+        isRecognitionPaused.toggle()
+        if isRecognitionPaused {
+            // 暂停视为当前句子结束：已识别内容先落库，实时预览清空
+            flushPendingBuffer()
+            resetPartialPreview()
+        }
+    }
+
     // MARK: - 麦克风模式
 
     private func startMicrophone() async {
         guard state != .listening else { return }
         errorMessage = nil
+        isRecognitionPaused = false
         segments = []
         failedTranslationIDs.removeAll()
         resetPartialPreview()
@@ -230,6 +246,7 @@ final class LiveSessionViewModel: ObservableObject {
         guard state != .listening else { return }
 
         errorMessage = nil
+        isRecognitionPaused = false
         segments = []
         failedTranslationIDs.removeAll()
         resetPartialPreview()
@@ -265,6 +282,7 @@ final class LiveSessionViewModel: ObservableObject {
     // MARK: - 收尾
 
     func stop() {
+        isRecognitionPaused = false
         speechRecognizer.stop()
         // 结束前把还没被 AI 整理的片段直接落库，避免丢失
         flushPendingBuffer()
@@ -377,6 +395,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     private func handleError(_ message: String) {
         errorMessage = message
+        isRecognitionPaused = false
         flushPendingBuffer()
         state = .ended
         liveActivity.end()

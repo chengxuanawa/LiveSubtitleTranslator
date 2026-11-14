@@ -33,11 +33,14 @@ struct LiveCaptionsView: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height || verticalSizeClass == .compact
+            // iPad 窗口化 / 台前调度下的窗口控制按钮会占用左上角，
+            // 用系统给的容器圆角内边距把顶栏内容整体右移避让
+            let windowControlsInset = proxy.containerCornerInsets.topLeading.width
             Group {
                 if isLandscape {
                     // 横屏单栏铺满：实时文字本来就在列表底部更新，
                     // 不再单独分栏；系统 Tab 栏在左下，悬浮按钮让到右下
-                    transcriptColumn(isLandscape: true)
+                    transcriptColumn(isLandscape: true, windowControlsInset: windowControlsInset)
                         .safeAreaPadding(.bottom, 76)
                         .overlay(alignment: .bottomTrailing) {
                             floatingControls
@@ -45,7 +48,7 @@ struct LiveCaptionsView: View {
                                 .padding(.bottom, 12)
                         }
                 } else {
-                    transcriptColumn(isLandscape: false)
+                    transcriptColumn(isLandscape: false, windowControlsInset: windowControlsInset)
                         .safeAreaPadding(.bottom, 96)
                         .overlay(alignment: .bottomTrailing) {
                             floatingControls
@@ -81,10 +84,10 @@ struct LiveCaptionsView: View {
     }
 
     /// 字幕栏：顶栏作为滚动视图的安全区插入视图，列表会滑到顶栏与状态栏下方
-    private func transcriptColumn(isLandscape: Bool) -> some View {
+    private func transcriptColumn(isLandscape: Bool, windowControlsInset: CGFloat) -> some View {
         segmentList(isLandscape: isLandscape)
             .safeAreaInset(edge: .top, spacing: 0) {
-                header(isLandscape: isLandscape)
+                header(isLandscape: isLandscape, windowControlsInset: windowControlsInset)
             }
             .softTopEdgeEffect()
     }
@@ -92,7 +95,7 @@ struct LiveCaptionsView: View {
     // MARK: - 顶部标题栏
 
     /// 左侧清空 + 标题，右侧语言胶囊（横屏时标题居中，与系统 Tab 栏的横屏样式统一）
-    private func header(isLandscape: Bool) -> some View {
+    private func header(isLandscape: Bool, windowControlsInset: CGFloat) -> some View {
         Group {
             if isLandscape {
                 ZStack {
@@ -105,6 +108,7 @@ struct LiveCaptionsView: View {
                         Spacer(minLength: 0)
                         languageControls
                     }
+                    .padding(.leading, windowControlsInset)
                 }
             } else {
                 HStack(spacing: 12) {
@@ -116,6 +120,7 @@ struct LiveCaptionsView: View {
                     Spacer(minLength: 8)
                     languageControls
                 }
+                .padding(.leading, windowControlsInset)
             }
         }
         .padding(.horizontal, 16)
@@ -146,7 +151,7 @@ struct LiveCaptionsView: View {
         VStack(alignment: .leading, spacing: 6) {
             if revealedText.isEmpty {
                 if viewModel.liveDisplayText.isEmpty {
-                    Text("正在聆听…")
+                    Text(viewModel.isRecognitionPaused ? "已暂停识别，录屏仍在继续" : "正在聆听…")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -158,7 +163,7 @@ struct LiveCaptionsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if settings.realtimeTranslationEnabled {
+            if settings.realtimeTranslationEnabled, !viewModel.isRecognitionPaused {
                 HStack(alignment: .top, spacing: 8) {
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(Color.accentColor)
@@ -173,7 +178,14 @@ struct LiveCaptionsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.8)
+        )
     }
 
     /// 实时文字：末尾几个字符用透明度渐变淡入，其余保持正常清晰
@@ -500,6 +512,10 @@ struct LiveCaptionsView: View {
                     HStack(spacing: 8) {
                         liveActivityButton
                         pipButton
+                        if viewModel.audioSourceMode == .systemAudio {
+                            pauseButton
+                                .transition(.scale.combined(with: .opacity))
+                        }
                     }
                     .padding(.horizontal, 8)
                     .glassEffect(.regular, in: Capsule())
@@ -518,8 +534,7 @@ struct LiveCaptionsView: View {
                     .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.state)
-            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)
-        }
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)        }
     }
 
     /// 音频来源切换：麦克风模式下显示红色圆点，系统共享音频模式下显示麦克风图标
@@ -629,7 +644,9 @@ struct LiveCaptionsView: View {
 
     private var stopButton: some View {
         Button {
-            viewModel.stop()
+            // 录屏模式无法由 App 直接停止系统广播：先弹出系统共享控件，
+            // 用户在控件里结束共享后，检测到音频流断开会自动收尾
+            BroadcastPickerTrigger.shared.trigger()
         } label: {
             Image(systemName: "stop.fill")
                 .font(.system(size: 22, weight: .semibold))
@@ -638,7 +655,13 @@ struct LiveCaptionsView: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(Color.red).interactive(), in: Circle())
-        .accessibilityLabel("停止识别")
+        .background(
+            BroadcastPickerView(preferredExtension: broadcastExtensionID)
+                .frame(width: 56, height: 56)
+                .opacity(0.001)
+                .allowsHitTesting(false)
+        )
+        .accessibilityLabel("结束共享并停止识别")
     }
 
     private var liveActivityButton: some View {
@@ -667,6 +690,21 @@ struct LiveCaptionsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕")
+    }
+
+    /// 系统共享音频：暂停/继续识别，广播与录屏不中断
+    private var pauseButton: some View {
+        Button {
+            viewModel.toggleRecognitionPause()
+        } label: {
+            Image(systemName: viewModel.isRecognitionPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(viewModel.isRecognitionPaused ? Color.accentColor : .secondary)
+                .frame(width: 56, height: 56)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.isRecognitionPaused ? "继续识别" : "暂停识别")
     }
 
     // MARK: - 工具栏
