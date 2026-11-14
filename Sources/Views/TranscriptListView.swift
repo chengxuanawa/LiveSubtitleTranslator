@@ -85,6 +85,7 @@ private struct TranscriptDetailView: View {
 
     @EnvironmentObject private var store: TranscriptStore
     @EnvironmentObject private var aiService: AIService
+    @Environment(\.dismiss) private var dismiss
     /// 订阅设置变化，AI 引擎切换后摘要按钮状态即时刷新
     @EnvironmentObject private var settings: SettingsStore
 
@@ -92,6 +93,8 @@ private struct TranscriptDetailView: View {
     @State private var isSummarizing = false
     /// 摘要卡片是否已展示（新摘要生成后淡入揭开）
     @State private var showSummary: Bool
+    /// 仅当前详情页可见时参与左边缘手势，避免隐藏页面继续占用手势
+    @State private var isEdgeSwipeEnabled = false
 
     init(session: TranscriptSession) {
         _session = State(initialValue: session)
@@ -120,6 +123,10 @@ private struct TranscriptDetailView: View {
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
         .softTopEdgeEffect()
+        .background(alignment: .topLeading) {
+            EdgeSwipeBackView(isEnabled: isEdgeSwipeEnabled) { dismiss() }
+                .frame(width: 1, height: 1)
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 summarizeButton
@@ -128,6 +135,8 @@ private struct TranscriptDetailView: View {
                 }
             }
         }
+        .onAppear { isEdgeSwipeEnabled = true }
+        .onDisappear { isEdgeSwipeEnabled = false }
     }
 
     // MARK: - AI 摘要

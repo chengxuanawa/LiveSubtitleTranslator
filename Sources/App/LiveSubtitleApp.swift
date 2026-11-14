@@ -29,8 +29,8 @@ struct LiveSubtitleApp: App {
     var body: some Scene {
         WindowGroup {
             RootTabView()
-                // 左边缘手势优先给 App（配合导航返回），避免台前调度/窗口化下
-                // 从屏幕最左侧滑动返回时被系统手势抢走
+                // 左边缘手势优先给 App；真正的返回识别器在历史详情页的
+                // EdgeSwipeBackView 中，避免台前调度/窗口化下被系统手势抢走
                 .defersSystemGestures(on: .leading)
                 .environmentObject(viewModel)
                 .environmentObject(settings)
