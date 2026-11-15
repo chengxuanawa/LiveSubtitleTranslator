@@ -75,6 +75,12 @@ final class LiveSessionViewModel: ObservableObject {
     private var locationTask: Task<Void, Never>?
     /// 打开系统广播选择器后的保活超时：用户取消选择时回收静音播放器
     private var broadcastPreparationTask: Task<Void, Never>?
+    /// 识别会话启动中：避免同一广播被连接回调和首帧回调重复启动
+    private var isStartingExternalRecognition = false
+    /// 外部识别是否已成功启动；连接保持但会话失效时需要重新启动
+    private var isExternalRecognitionRunning = false
+    /// 外部识别启动代际：停止/重启后，旧的异步启动结果不能再改回运行状态
+    private var externalRecognitionGeneration = 0
 
     // MARK: - AI 分段缓冲
 
@@ -144,6 +150,9 @@ final class LiveSessionViewModel: ObservableObject {
         systemAudioServer.onStreamEnded = { [weak self] in
             self?.handleBroadcastEnded()
         }
+        systemAudioServer.onStreamStalled = { [weak self] in
+            self?.handleBroadcastStalled()
+        }
     }
 
     var audioSourceMode: AudioSourceMode {
@@ -172,12 +181,42 @@ final class LiveSessionViewModel: ObservableObject {
 
     /// 系统音频模式进入页面时调用：保证广播扩展能连上本地端口
     func prepareSystemAudioServer() {
-        if !systemAudioServer.isWaitingForBroadcast && !systemAudioServer.isReceivingAudio {
-            _ = systemAudioServer.start()
-        }
+        systemAudioServer.start()
         isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
         if !isWaitingForBroadcast && !systemAudioServer.isReceivingAudio {
             errorMessage = "无法启动系统音频通道（本地端口被占用），请稍后重试。"
+        }
+    }
+
+    /// 从后台回到前台时调用：广播可能仍在录屏，但主 App 的监听/识别已被系统暂停。
+    /// 先检查广播是否真的还有心跳，再决定是否重建通道并重启识别会话。
+    func recoverSystemAudioIfNeeded() {
+        guard settings.audioSourceMode == .systemAudio else {
+            prepareSystemAudioServer()
+            return
+        }
+        if state == .listening, !systemAudioServer.hasRecentActivity {
+            // 连接看似还在但已收不到心跳：整体重建监听器，保留当前会话等待扩展重连
+            systemAudioServer.restartListener()
+            isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
+            isExternalRecognitionRunning = false
+            return
+        }
+        prepareSystemAudioServer()
+        if state == .listening, !isExternalRecognitionRunning {
+            startExternalRecognitionIfNeeded()
+        }
+    }
+
+    /// App 进入后台：只标记状态，不结束会话；后台收不到心跳属于正常现象。
+    /// 注意 iPad 分屏时 App 可能只是 .inactive（仍可见、仍在工作），不能当成后台。
+    func handleScenePhase(_ phase: ScenePhase) {
+        systemAudioServer.setAppActive(phase != .background)
+        if phase == .active {
+            recoverSystemAudioIfNeeded()
+        } else if phase == .background {
+            // 系统广播扩展仍在采集，但主 App 可能随时被挂起；静音保活必须保持
+            keepAlive.start()
         }
     }
 
@@ -273,24 +312,42 @@ final class LiveSessionViewModel: ObservableObject {
 
     private func handleBroadcastStarted() {
         isWaitingForBroadcast = false
-        guard state != .listening else { return }
+        // 广播已经重新连接：即使界面还停在 listening，也要确认识别会话仍在运行，
+        // 否则旧会话已失效时新的音频会全部被丢弃。
+        if state == .listening, isExternalRecognitionRunning {
+            keepAlive.start()
+            return
+        }
 
         broadcastPreparationTask?.cancel()
         broadcastPreparationTask = nil
 
+        let isResumingExistingSession = state == .listening
         errorMessage = nil
-        isRecognitionPaused = false
-        segments = []
-        failedTranslationIDs.removeAll()
-        resetPartialPreview()
-        resetPendingBuffer()
-        startNewSessionContext()
+        if !isResumingExistingSession {
+            isRecognitionPaused = false
+            segments = []
+            failedTranslationIDs.removeAll()
+            resetPartialPreview()
+            resetPendingBuffer()
+            startNewSessionContext()
+        }
 
         speechRecognizer.locale = Locale(identifier: sourceIdentifier)
         state = .listening
         // 广播期间保持后台运行，确保本地音频服务器不被挂起
         keepAlive.start()
         autoStartVisualIfNeeded()
+
+        startExternalRecognitionIfNeeded()
+    }
+
+    private func startExternalRecognitionIfNeeded() {
+        guard !isExternalRecognitionRunning, !isStartingExternalRecognition else { return }
+        isStartingExternalRecognition = true
+        isExternalRecognitionRunning = false
+        externalRecognitionGeneration += 1
+        let generation = externalRecognitionGeneration
 
         Task { [weak self] in
             guard let self else { return }
@@ -299,8 +356,12 @@ final class LiveSessionViewModel: ObservableObject {
                 target: Locale.Language(identifier: self.targetIdentifier)
             )
             await self.speechRecognizer.startExternalAudio()
+            guard generation == self.externalRecognitionGeneration else { return }
+            self.isStartingExternalRecognition = false
             if self.errorMessage != nil {
                 self.stop()
+            } else {
+                self.isExternalRecognitionRunning = true
             }
         }
     }
@@ -312,10 +373,22 @@ final class LiveSessionViewModel: ObservableObject {
         }
     }
 
+    /// 连接已建立但持续收不到音频/心跳：多数是主 App 在后台被挂起。
+    /// 保持会话与字幕，只重建通道并提示；扩展会自动重连。
+    private func handleBroadcastStalled() {
+        isWaitingForBroadcast = true
+        isExternalRecognitionRunning = false
+        guard state == .listening else { return }
+        errorMessage = "系统音频通道已中断，正在重连；若仍未恢复，请结束共享后重新开始。"
+    }
+
     // MARK: - 收尾
 
     func stop() {
         isRecognitionPaused = false
+        externalRecognitionGeneration += 1
+        isStartingExternalRecognition = false
+        isExternalRecognitionRunning = false
         broadcastPreparationTask?.cancel()
         broadcastPreparationTask = nil
         speechRecognizer.stop()

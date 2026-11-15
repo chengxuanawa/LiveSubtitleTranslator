@@ -13,6 +13,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var isConnected = false
     private var isBroadcasting = false
     private var reconnectScheduled = false
+    private var heartbeatScheduled = false
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private var targetFormat: AVAudioFormat?
@@ -48,6 +49,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             guard let self else { return }
             self.isBroadcasting = false
             self.reconnectScheduled = false
+            self.heartbeatScheduled = false
             let oldConnection = self.connection
             self.connection = nil
             oldConnection?.cancel()
@@ -92,6 +94,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             switch state {
             case .ready:
                 self.setConnected(true)
+                self.startHeartbeat()
             case .failed, .cancelled, .waiting:
                 self.setConnected(false)
                 // 主 App 的本地监听可能还没就绪或被系统挂起，1 秒后自动重连
@@ -102,6 +105,30 @@ final class SampleHandler: RPBroadcastSampleHandler {
         }
         connection.start(queue: queue)
     }
+
+    /// 没有音频播放时也要让主 App 知道广播仍在运行：
+    /// 长度为 0 的包不会进入识别，只用于刷新主 App 的存活计时。
+    private func startHeartbeat() {
+        guard isBroadcasting, !heartbeatScheduled else { return }
+        heartbeatScheduled = true
+        scheduleHeartbeatTick()
+    }
+
+    private func scheduleHeartbeatTick() {
+        queue.asyncAfter(deadline: .now() + AudioStreamProtocol.heartbeatInterval) { [weak self] in
+            guard let self else { return }
+            guard self.isBroadcasting else {
+                self.heartbeatScheduled = false
+                return
+            }
+            if self.connected {
+                self.send(Self.heartbeatPacket)
+            }
+            self.scheduleHeartbeatTick()
+        }
+    }
+
+    private static let heartbeatPacket = Data([0, 0, 0, 0])
 
     /// 主 App 尚未开始监听时持续重试，直到连接成功或广播结束
     private func scheduleReconnect() {

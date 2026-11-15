@@ -9,8 +9,6 @@ struct LiveCaptionsView: View {
     @EnvironmentObject private var aiService: AIService
     /// 横屏兜底判断：部分情况下窗口尺寸更新滞后，紧凑高度也视为横屏
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    /// 回到前台时重新确认本地音频监听是否还在
-    @Environment(\.scenePhase) private var scenePhase
 
     private let broadcastExtensionID = "com.example.sublingo.broadcast"
     private let bottomAnchorID = "transcript-bottom"
@@ -74,12 +72,6 @@ struct LiveCaptionsView: View {
             }
             .onChange(of: settings.keepScreenOnWhileRecognizing) { _, _ in
                 viewModel.refreshIdleTimer()
-            }
-            .onChange(of: scenePhase) { _, phase in
-                // App 被挂起期间广播可能已开始，回到前台后重建失效的监听器
-                if phase == .active {
-                    viewModel.prepareSystemAudioServer()
-                }
             }
             .onDisappear {
                 revealTask?.cancel()

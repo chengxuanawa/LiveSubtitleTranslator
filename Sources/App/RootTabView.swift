@@ -4,6 +4,7 @@ import SwiftUI
 struct RootTabView: View {
     @EnvironmentObject private var viewModel: LiveSessionViewModel
     @EnvironmentObject private var settings: SettingsStore
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView {
@@ -19,6 +20,10 @@ struct RootTabView: View {
         }
         .translationTask(source: sourceLanguage, target: targetLanguage) { session in
             viewModel.attachTranslationSession(session)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // 放在根视图：分屏/切换页签时字幕页不一定收到生命周期回调
+            viewModel.handleScenePhase(phase)
         }
     }
 
