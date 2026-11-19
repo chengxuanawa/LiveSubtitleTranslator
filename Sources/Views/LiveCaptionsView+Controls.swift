@@ -110,14 +110,22 @@ extension LiveCaptionsView {
         }
     }
 
-    /// 系统共享音频主按钮：玻璃外观，实际点击目标是内嵌的系统广播选择器
+    /// 系统共享音频主按钮：自定义蓝色玻璃外观，点击后弹出系统广播选择器
     private var systemAudioButton: some View {
-        broadcastPickerButton(
-            systemImage: "dot.radiowaves.left.and.right",
-            iconSize: 24,
-            tint: Color.accentColor,
-            accessibilityLabel: "开始系统广播"
-        )
+        Button {
+            // 广播开始后 App 可能立刻退到后台，提前启动静音保活，避免本地监听被挂起
+            viewModel.prepareSystemAudioBroadcast()
+            BroadcastPickerTrigger.shared.trigger()
+        } label: {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Circle())
+        .background(broadcastPickerHost)
+        .accessibilityLabel("开始系统广播")
     }
 
     private var recordButton: some View {
@@ -142,41 +150,29 @@ extension LiveCaptionsView {
     }
 
     private var stopButton: some View {
-        // 录屏模式无法由 App 直接停止系统广播：点击后弹出系统共享控件，
-        // 用户在控件里结束共享后，检测到音频流断开会自动收尾
-        broadcastPickerButton(
-            systemImage: "stop.fill",
-            iconSize: 22,
-            tint: Color.red,
-            accessibilityLabel: "结束共享并停止识别"
-        )
+        Button {
+            // 录屏模式无法由 App 直接停止系统广播：弹出系统共享控件，
+            // 用户在控件里结束共享后，检测到音频流断开会自动收尾
+            viewModel.prepareSystemAudioBroadcast()
+            BroadcastPickerTrigger.shared.trigger()
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.tint(Color.red).interactive(), in: Circle())
+        .background(broadcastPickerHost)
+        .accessibilityLabel("结束共享并停止识别")
     }
 
-    /// 玻璃按钮 + 透明系统广播选择器：由系统原生处理点击，
-    /// 不再使用私有子按钮 sendActions，避免 iOS 26 上闪退或点击无效
-    private func broadcastPickerButton(
-        systemImage: String,
-        iconSize: CGFloat,
-        tint: Color,
-        accessibilityLabel: String
-    ) -> some View {
-        ZStack {
-            Circle()
-                .fill(.clear)
-                .glassEffect(.regular.tint(tint).interactive(), in: Circle())
-            Image(systemName: systemImage)
-                .font(.system(size: iconSize, weight: .semibold))
-                .foregroundStyle(.white)
-                .allowsHitTesting(false)
-            BroadcastPickerView(preferredExtension: broadcastExtensionID) {
-                viewModel.prepareSystemAudioBroadcast()
-            }
-            .opacity(0.02)
-        }
-        .frame(width: 56, height: 56)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(.isButton)
+    /// 系统广播选择器的透明宿主，供自定义按钮程序化调起共享控件
+    private var broadcastPickerHost: some View {
+        BroadcastPickerView(preferredExtension: broadcastExtensionID)
+            .frame(width: 56, height: 56)
+            .opacity(0.001)
+            .allowsHitTesting(false)
     }
 
     private var liveActivityButton: some View {

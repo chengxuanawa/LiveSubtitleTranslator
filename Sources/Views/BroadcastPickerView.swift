@@ -2,55 +2,45 @@ import ReplayKit
 import SwiftUI
 import UIKit
 
-/// 系统广播选择器：直接把 `RPSystemBroadcastPickerView` 作为点击目标。
-/// 不再通过遍历私有子按钮并 `sendActions` 程序化触发——该做法在 iOS 26 上
-/// 可能直接导致 App 闪退，且点击失败时用户会误以为已开始共享。
+/// 程序化触发系统广播选择器：`RPSystemBroadcastPickerView` 没有公开的弹出方法，
+/// 这里找到其内部的 UIButton 并发送点击事件，外层即可使用自定义样式的按钮。
+final class BroadcastPickerTrigger {
+    static let shared = BroadcastPickerTrigger()
+    weak var picker: RPSystemBroadcastPickerView?
+
+    /// 触发系统面板；选择器必须已挂到窗口上，否则推迟一帧再试，避免在已移除的视图上点击
+    func trigger(canRetry: Bool = true) {
+        guard let picker else { return }
+        guard picker.window != nil else {
+            guard canRetry else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.trigger(canRetry: false)
+            }
+            return
+        }
+        guard let button = Self.findButton(in: picker) else { return }
+        button.sendActions(for: .touchUpInside)
+    }
+
+    private static func findButton(in view: UIView) -> UIButton? {
+        if let button = view as? UIButton { return button }
+        for subview in view.subviews {
+            if let button = findButton(in: subview) { return button }
+        }
+        return nil
+    }
+}
+
+/// 系统广播选择器：点击后弹出系统“广播”选择器，选择本 App 的扩展即可开始共享。
 struct BroadcastPickerView: UIViewRepresentable {
     let preferredExtension: String
-    /// 点击选择器时同步执行（用于提前启动本地监听与静音保活）
-    var onTap: (() -> Void)?
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onTap: onTap)
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView()
+    func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
         let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
         picker.preferredExtension = preferredExtension
-        picker.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        container.addSubview(picker)
-
-        // 不拦截系统按钮的触摸，仅旁路通知调用方做准备工作
-        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap))
-        tap.cancelsTouchesInView = false
-        tap.delegate = context.coordinator
-        container.addGestureRecognizer(tap)
-        return container
+        BroadcastPickerTrigger.shared.picker = picker
+        return picker
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.onTap = onTap
-    }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var onTap: (() -> Void)?
-
-        init(onTap: (() -> Void)?) {
-            self.onTap = onTap
-            super.init()
-        }
-
-        @objc func handleTap() {
-            onTap?()
-        }
-
-        /// 与系统选择器内部的点击手势同时识别，保证保活/监听准备不会丢失
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-        ) -> Bool {
-            true
-        }
-    }
+    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {}
 }
