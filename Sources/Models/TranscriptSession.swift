@@ -33,11 +33,6 @@ struct TranscriptSession: Identifiable, Codable, Hashable {
         self.locationName = locationName
     }
 
-    /// 会话时长
-    var duration: TimeInterval {
-        max(0, endedAt.timeIntervalSince(startedAt))
-    }
-
     /// 导出的纯文本内容（用于分享 / 拷贝）
     func exportText() -> String {
         let dateFormatter = DateFormatter()

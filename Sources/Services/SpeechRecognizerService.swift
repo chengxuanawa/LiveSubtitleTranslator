@@ -158,35 +158,7 @@ final class SpeechRecognizerService: SpeechRecognizing {
                 submitSegment(trailing, audioStart: nil)
             }
         }
-        latestPartialText = ""
-        isRunning = false
-        isExternalAudio = false
-        externalAudioBacklog.removeAll()
-
-        inputContinuation?.finish()
-        inputContinuation = nil
-        resultsTask?.cancel()
-        resultsTask = nil
-
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        if isTapInstalled {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            isTapInstalled = false
-        }
-
-        // 让引擎收尾并释放模型会话；结果流已不再需要
-        let analyzer = self.analyzer
-        Task {
-            try? await analyzer?.finalizeAndFinishThroughEndOfInput()
-        }
-
-        self.analyzer = nil
-        analyzerFormat = nil
-        externalConverter = nil
-        externalInputFormat = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        resetEngine(cancelAnalyzer: false, deactivateAudioSession: true)
     }
 
     // MARK: - 系统共享音频
@@ -218,34 +190,11 @@ final class SpeechRecognizerService: SpeechRecognizing {
     /// 系统共享音频模式只释放识别资源，不关闭 App 的音频会话：
     /// 广播期间主 App 在后台，保活播放器仍需要这个会话来避免被系统挂起。
     private func stopExternalAudio(preserveBufferedAudio: Bool = false) {
-        isRunning = false
-        isExternalAudio = preserveBufferedAudio
-        if !preserveBufferedAudio {
-            externalAudioBacklog.removeAll()
-        }
-        latestPartialText = ""
-        inputContinuation?.finish()
-        inputContinuation = nil
-        resultsTask?.cancel()
-        resultsTask = nil
-
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        if isTapInstalled {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            isTapInstalled = false
-        }
-
-        let analyzer = self.analyzer
-        Task {
-            await analyzer?.cancelAndFinishNow()
-        }
-
-        self.analyzer = nil
-        analyzerFormat = nil
-        externalConverter = nil
-        externalInputFormat = nil
+        resetEngine(
+            cancelAnalyzer: true,
+            deactivateAudioSession: false,
+            preserveBufferedAudio: preserveBufferedAudio
+        )
     }
 
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -374,10 +323,22 @@ final class SpeechRecognizerService: SpeechRecognizing {
     // MARK: - 收尾
 
     private func tearDown() {
+        resetEngine(cancelAnalyzer: true, deactivateAudioSession: true)
+    }
+
+    /// 统一释放识别会话资源，避免停止 / 收尾 / 外部音频三条路径各写一遍
+    private func resetEngine(
+        cancelAnalyzer: Bool,
+        deactivateAudioSession: Bool,
+        preserveBufferedAudio: Bool = false
+    ) {
         isRunning = false
-        isExternalAudio = false
-        externalAudioBacklog.removeAll()
+        isExternalAudio = preserveBufferedAudio
+        if !preserveBufferedAudio {
+            externalAudioBacklog.removeAll()
+        }
         latestPartialText = ""
+
         inputContinuation?.finish()
         inputContinuation = nil
         resultsTask?.cancel()
@@ -393,14 +354,20 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
         let analyzer = self.analyzer
         Task {
-            await analyzer?.cancelAndFinishNow()
+            if cancelAnalyzer {
+                await analyzer?.cancelAndFinishNow()
+            } else {
+                try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+            }
         }
 
         self.analyzer = nil
         analyzerFormat = nil
         externalConverter = nil
         externalInputFormat = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if deactivateAudioSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     // MARK: - 分段提交

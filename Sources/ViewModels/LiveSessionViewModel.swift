@@ -224,12 +224,11 @@ final class LiveSessionViewModel: ObservableObject {
     /// App 在系统选择器出现后会立即进入后台，等到广播连上再启动保活可能已经被挂起。
     func prepareSystemAudioBroadcast() {
         prepareSystemAudioServer()
+        keepAlive.start()
         guard state != .listening else {
             // 结束共享时也要保持音频会话，直到系统控件真正停止广播
-            keepAlive.start()
             return
         }
-        keepAlive.start()
         broadcastPreparationTask?.cancel()
         broadcastPreparationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 60_000_000_000)
@@ -287,12 +286,7 @@ final class LiveSessionViewModel: ObservableObject {
     private func startMicrophone() async {
         guard state != .listening else { return }
         errorMessage = nil
-        isRecognitionPaused = false
-        segments = []
-        failedTranslationIDs.removeAll()
-        resetPartialPreview()
-        resetPendingBuffer()
-        startNewSessionContext()
+        resetForNewRecording()
 
         await translationService.setLanguagePair(
             source: Locale.Language(identifier: sourceIdentifier),
@@ -325,12 +319,7 @@ final class LiveSessionViewModel: ObservableObject {
         let isResumingExistingSession = state == .listening
         errorMessage = nil
         if !isResumingExistingSession {
-            isRecognitionPaused = false
-            segments = []
-            failedTranslationIDs.removeAll()
-            resetPartialPreview()
-            resetPendingBuffer()
-            startNewSessionContext()
+            resetForNewRecording()
         }
 
         speechRecognizer.locale = Locale(identifier: sourceIdentifier)
@@ -389,17 +378,12 @@ final class LiveSessionViewModel: ObservableObject {
         externalRecognitionGeneration += 1
         isStartingExternalRecognition = false
         isExternalRecognitionRunning = false
-        broadcastPreparationTask?.cancel()
-        broadcastPreparationTask = nil
+        cancelBroadcastPreparation()
         speechRecognizer.stop()
         // 结束前把还没被 AI 整理的片段直接落库，避免丢失
         flushPendingBuffer()
         resetPartialPreview()
-        liveActivity.end()
-        keepAlive.stop()
-        pipController.stop()
-        isLiveActivityActive = false
-        isPictureInPictureActive = false
+        teardownOutputs()
         sessionEnd = Date()
         state = .ended
         saveCurrentSession()
@@ -440,6 +424,30 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     // MARK: - 会话上下文 / 浮窗自动选择
+
+    /// 新录制开始前重置会话数据与所有缓冲区
+    private func resetForNewRecording() {
+        isRecognitionPaused = false
+        segments = []
+        failedTranslationIDs.removeAll()
+        resetPartialPreview()
+        resetPendingBuffer()
+        startNewSessionContext()
+    }
+
+    /// 统一关闭灵动岛 / 画中画并停止静音保活
+    private func teardownOutputs() {
+        liveActivity.end()
+        keepAlive.stop()
+        pipController.stop()
+        isLiveActivityActive = false
+        isPictureInPictureActive = false
+    }
+
+    private func cancelBroadcastPreparation() {
+        broadcastPreparationTask?.cancel()
+        broadcastPreparationTask = nil
+    }
 
     /// 每次开始录制时重置会话标识、计时与地点
     private func startNewSessionContext() {
@@ -502,17 +510,12 @@ final class LiveSessionViewModel: ObservableObject {
     // MARK: - 私有
 
     private func handleError(_ message: String) {
-        broadcastPreparationTask?.cancel()
-        broadcastPreparationTask = nil
+        cancelBroadcastPreparation()
         errorMessage = message
         isRecognitionPaused = false
         flushPendingBuffer()
         state = .ended
-        liveActivity.end()
-        keepAlive.stop()
-        pipController.stop()
-        isLiveActivityActive = false
-        isPictureInPictureActive = false
+        teardownOutputs()
     }
 
     /// 以约 12Hz 的频率发布部分识别结果，避免高频刷新造成文字抖动；尾部补发保证文本不丢失

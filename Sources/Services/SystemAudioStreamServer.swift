@@ -202,7 +202,8 @@ final class SystemAudioStreamServer: ObservableObject {
     private func consume(_ data: Data) {
         receiveBuffer.append(data)
         while receiveBuffer.count >= 4 {
-            let length = Int(receiveBuffer.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
+            // 手动按大端解析长度，避免 Data 内部指针未对齐时的 UInt32 未对齐读取
+            let length = Int(receiveBuffer.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
             // 长度为 0 是心跳包：只刷新存活时间，不产生音频
             if length == 0 {
                 receiveBuffer.removeFirst(4)
@@ -236,9 +237,10 @@ final class SystemAudioStreamServer: ObservableObject {
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
               let channel = buffer.int16ChannelData?[0] else { return }
         buffer.frameLength = frameCount
+        // 直接按字节拷贝到 Int16 声道，避免把可能未对齐的 Data 指针绑定成 Int16
         payload.withUnsafeBytes { raw in
-            if let base = raw.bindMemory(to: Int16.self).baseAddress {
-                channel.update(from: base, count: Int(frameCount))
+            if let base = raw.baseAddress {
+                memcpy(channel, base, Int(frameCount) * MemoryLayout<Int16>.size)
             }
         }
         onAudioBuffer?(buffer)

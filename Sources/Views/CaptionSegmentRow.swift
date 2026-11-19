@@ -87,15 +87,7 @@ struct CaptionSegmentRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-        )
-        .overlay(
-            // 与实时字幕一致：浅色描边让气泡在相近底色上也有清晰边界
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.8)
-        )
+        .captionBubbleBackground()
         .padding(.horizontal, 12)
         .onAppear {
             // 只有首次出现且未播放过的气泡才播入场动画；流式追加不会重播

@@ -10,16 +10,13 @@ protocol TextTranslating: AnyObject {
     func attach(session: TranslationSession)
     /// 翻译单条文本；失败时返回 nil（界面回退为仅显示原文）
     func translate(_ text: String) async -> String?
-    var onTranslationError: ((_ message: String) -> Void)? { get set }
 }
 
 /// 基于系统 Translation 框架的实现。
 /// 会话由视图层 .translationTask(source:target:) 注入，
 /// 由 SwiftUI 自动等待语言包就绪，无需手动处理下载。
 @MainActor
-final class TranslationService: ObservableObject, TextTranslating {
-
-    var onTranslationError: ((_ message: String) -> Void)?
+final class TranslationService: TextTranslating {
 
     private struct LanguagePair: Equatable {
         let source: Locale.Language
@@ -96,7 +93,6 @@ final class TranslationService: ObservableObject, TextTranslating {
         guard let index = pendingItems.firstIndex(where: { $0.id == id }) else { return }
         let item = pendingItems.remove(at: index)
         item.continuation.resume(returning: nil)
-        onTranslationError?("翻译服务尚未就绪，请稍后重试。")
     }
 
     /// 串行处理队列，保证译文回填顺序与原文顺序一致
@@ -120,7 +116,6 @@ final class TranslationService: ObservableObject, TextTranslating {
                     item.continuation.resume(returning: translated)
                 } catch {
                     item.continuation.resume(returning: nil)
-                    self.onTranslationError?(self.message(for: error))
                 }
             }
         }
@@ -143,19 +138,6 @@ final class TranslationService: ObservableObject, TextTranslating {
             return true
         default:
             return false
-        }
-    }
-
-    private func message(for error: Error) -> String {
-        switch error {
-        case TranslationError.notInstalled:
-            return "翻译语言包尚未安装，请允许下载后重试。"
-        case TranslationError.alreadyCancelled:
-            return "翻译会话已失效，请重试。"
-        case TranslationError.unsupportedLanguagePairing:
-            return "当前语言对不支持离线翻译，请更换语言后重试。"
-        default:
-            return error.localizedDescription
         }
     }
 }

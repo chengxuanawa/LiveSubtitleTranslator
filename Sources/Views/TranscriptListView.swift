@@ -210,13 +210,14 @@ private struct TranscriptDetailView: View {
         .background {
             TimelineView(.animation(minimumInterval: 0.08)) { context in
                 let time = context.date.timeIntervalSinceReferenceDate
+                let mesh = summaryMesh(time: time)
                 ZStack {
                     // 外圈光晕：同一片网格渐变放大模糊，颜色过渡不出边缘
-                    summaryMesh(time: time)
+                    mesh
                         .blur(radius: 24)
                         .opacity(0.9)
                         .padding(-10)
-                    summaryMesh(time: time)
+                    mesh
                         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 }
             }

@@ -9,9 +9,6 @@ struct LanguageOption: Identifiable, Hashable {
 
     var id: String { identifier }
 
-    var locale: Locale { Locale(identifier: identifier) }
-    var localeLanguage: Locale.Language { Locale.Language(identifier: identifier) }
-
     static let all: [LanguageOption] = [
         LanguageOption(identifier: "zh-Hans", displayName: "中文（简体）"),
         LanguageOption(identifier: "zh-TW", displayName: "中文（繁體）"),

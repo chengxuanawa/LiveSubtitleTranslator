@@ -4,9 +4,7 @@ import Foundation
 /// 管理实时字幕 Live Activity 的启动 / 更新 / 结束。
 /// 注意：受系统更新预算限制，按“完整句子”粒度更新（而非逐字部分结果）。
 @MainActor
-final class LiveActivityService: ObservableObject {
-
-    @Published private(set) var isActive = false
+final class LiveActivityService {
 
     private var activity: Activity<LiveCaptionAttributes>?
     private var languagePair = ""
@@ -21,7 +19,6 @@ final class LiveActivityService: ObservableObject {
     func start(languagePair: String) -> Bool {
         guard Self.isSupported else { return false }
         if activity != nil {
-            isActive = true
             return true
         }
         self.languagePair = languagePair
@@ -37,15 +34,13 @@ final class LiveActivityService: ObservableObject {
                 content: ActivityContent(state: state, staleDate: nil),
                 pushType: nil
             )
-            isActive = true
         } catch {
             activity = nil
-            isActive = false
             #if DEBUG
             print("[LiveActivity] 启动失败：\(error.localizedDescription)")
             #endif
         }
-        return isActive
+        return activity != nil
     }
 
     func update(originalText: String, translatedText: String?) {
@@ -63,7 +58,6 @@ final class LiveActivityService: ObservableObject {
     func end() {
         let current = activity
         activity = nil
-        isActive = false
         guard let current else { return }
         Task {
             await current.end(nil, dismissalPolicy: .immediate)
