@@ -202,11 +202,15 @@ final class SystemAudioStreamServer: ObservableObject {
     private func consume(_ data: Data) {
         receiveBuffer.append(data)
         while receiveBuffer.count >= 4 {
+            // Data 被删除前缀后 startIndex 可能不再是 0，必须用当前索引计算范围，
+            // 否则 removeSubrange 会因越界直接触发 SIGTRAP（历史上的闪退根因）
+            let start = receiveBuffer.startIndex
+            let headerEnd = start + 4
             // 手动按大端解析长度，避免 Data 内部指针未对齐时的 UInt32 未对齐读取
-            let length = Int(receiveBuffer.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+            let length = Int(receiveBuffer[start..<headerEnd].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
             // 长度为 0 是心跳包：只刷新存活时间，不产生音频
             if length == 0 {
-                receiveBuffer.removeFirst(4)
+                receiveBuffer.removeSubrange(start..<headerEnd)
                 lastPacketAt = Date()
                 continue
             }
@@ -215,8 +219,9 @@ final class SystemAudioStreamServer: ObservableObject {
                 return
             }
             guard receiveBuffer.count >= 4 + length else { return }
-            let payload = receiveBuffer.subdata(in: 4..<(4 + length))
-            receiveBuffer.removeSubrange(0..<(4 + length))
+            let packetEnd = headerEnd + length
+            let payload = receiveBuffer.subdata(in: headerEnd..<packetEnd)
+            receiveBuffer.removeSubrange(start..<packetEnd)
             deliver(payload)
         }
     }
