@@ -19,7 +19,7 @@ struct RootTabView: View {
             }
         }
         .translationTask(source: sourceLanguage, target: targetLanguage) { session in
-            viewModel.attachTranslationSession(session)
+            await viewModel.keepTranslationSessionAlive(session)
         }
         .onChange(of: scenePhase) { _, phase in
             // 放在根视图：分屏/切换页签时字幕页不一定收到生命周期回调

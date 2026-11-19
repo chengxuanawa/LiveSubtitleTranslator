@@ -6,8 +6,11 @@ import Translation
 protocol TextTranslating: AnyObject {
     /// 设定翻译语言对
     func setLanguagePair(source: Locale.Language, target: Locale.Language) async
-    /// 接入由 SwiftUI translationTask 提供的系统翻译会话
-    func attach(session: TranslationSession)
+    /// 接入由 SwiftUI translationTask 提供的系统翻译会话，返回会话令牌
+    @discardableResult
+    func attach(session: TranslationSession) -> Int
+    /// 会话结束（translationTask 被取消）时释放；令牌不匹配说明已换成新会话
+    func detach(token: Int)
     /// 翻译单条文本；失败时返回 nil（界面回退为仅显示原文）
     func translate(_ text: String) async -> String?
 }
@@ -30,6 +33,7 @@ final class TranslationService: TextTranslating {
     }
 
     private var session: TranslationSession?
+    private var sessionToken = 0
     private var requestedPair: LanguagePair?
     private var attachedPair: LanguagePair?
     private var pendingItems: [PendingItem] = []
@@ -51,7 +55,10 @@ final class TranslationService: TextTranslating {
         }
     }
 
-    func attach(session: TranslationSession) {
+    @discardableResult
+    func attach(session: TranslationSession) -> Int {
+        sessionToken += 1
+        let token = sessionToken
         let pair = LanguagePair(
             source: session.sourceLanguage ?? requestedPair?.source ?? Locale.Language(identifier: "en"),
             target: session.targetLanguage ?? requestedPair?.target ?? Locale.Language(identifier: "en")
@@ -63,6 +70,16 @@ final class TranslationService: TextTranslating {
         attachedPair = pair
         requestedPair = pair
         processNextIfIdle()
+        return token
+    }
+
+    func detach(token: Int) {
+        guard token == sessionToken else { return }
+        session = nil
+        attachedPair = nil
+        for item in pendingItems {
+            scheduleWaitTimeout(for: item.id)
+        }
     }
 
     func translate(_ text: String) async -> String? {

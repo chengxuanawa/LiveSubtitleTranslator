@@ -81,6 +81,8 @@ final class LiveSessionViewModel: ObservableObject {
     private var isExternalRecognitionRunning = false
     /// 外部识别启动代际：停止/重启后，旧的异步启动结果不能再改回运行状态
     private var externalRecognitionGeneration = 0
+    /// 广播开始时 App 在后台，画中画自动启动被推迟到回到前台
+    private var pendingAutoPiPStart = false
 
     // MARK: - AI 分段缓冲
 
@@ -214,6 +216,10 @@ final class LiveSessionViewModel: ObservableObject {
         systemAudioServer.setAppActive(phase != .background)
         if phase == .active {
             recoverSystemAudioIfNeeded()
+            if pendingAutoPiPStart, state == .listening {
+                pendingAutoPiPStart = false
+                autoStartVisualIfNeeded()
+            }
         } else if phase == .background {
             // 系统广播扩展仍在采集，但主 App 可能随时被挂起；静音保活必须保持
             keepAlive.start()
@@ -375,6 +381,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     func stop() {
         isRecognitionPaused = false
+        pendingAutoPiPStart = false
         externalRecognitionGeneration += 1
         isStartingExternalRecognition = false
         isExternalRecognitionRunning = false
@@ -419,8 +426,14 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     /// 接入 SwiftUI translationTask 提供的系统翻译会话
-    func attachTranslationSession(_ session: TranslationSession) {
-        translationService.attach(session: session)
+    /// 保持 translationTask 的 action 存活：TranslationSession 只在 action 执行期间有效，
+    /// 提前返回后再用旧 session 翻译属于未定义行为，可能出现闪退。
+    func keepTranslationSessionAlive(_ session: TranslationSession) async {
+        let token = translationService.attach(session: session)
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        translationService.detach(token: token)
     }
 
     // MARK: - 会话上下文 / 浮窗自动选择
@@ -499,6 +512,13 @@ final class LiveSessionViewModel: ObservableObject {
             }
         case .pictureInPicture:
             guard CaptionPictureInPictureController.isSupported else { return }
+            // 画中画只允许在前台启动；广播开始时 App 通常已在后台，
+            // 强行启动可能被系统拒绝甚至闪退，改为回到前台后补启动
+            guard UIApplication.shared.applicationState == .active else {
+                pendingAutoPiPStart = true
+                return
+            }
+            pendingAutoPiPStart = false
             pipController.shape = settings.pipShape
             _ = pipController.start()
             pipController.update(original: "正在聆听…", translated: nil)

@@ -98,6 +98,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     @discardableResult
     func start() -> Bool {
         guard Self.isSupported else { return false }
+        // 系统要求画中画在前台发起；后台调用可能被拒绝甚至触发系统异常
+        guard UIApplication.shared.applicationState == .active else { return false }
         // 已在等待系统允许或已经激活时，不重复发起
         if pendingStart || pipController?.isPictureInPictureActive == true { return true }
         // 不再把音频会话切到 .playback：那会抢占麦克风，导致录音中开画中画时识别掉线
