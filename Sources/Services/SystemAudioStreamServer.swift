@@ -222,6 +222,11 @@ final class SystemAudioStreamServer: ObservableObject {
             let packetEnd = headerEnd + length
             let payload = receiveBuffer.subdata(in: headerEnd..<packetEnd)
             receiveBuffer.removeSubrange(start..<packetEnd)
+            // 扩展明确告知广播已结束：立即收尾，不再等宽限期
+            if payload == AudioStreamProtocol.stopPayload {
+                handleStreamStopped()
+                return
+            }
             deliver(payload)
         }
     }
@@ -265,6 +270,22 @@ final class SystemAudioStreamServer: ObservableObject {
         if isAppActive {
             scheduleStreamEnd(after: 6)
         }
+    }
+
+    /// 广播扩展明确发送了结束标记：立即结束本次共享，不再等待断线宽限期
+    private func handleStreamStopped() {
+        disconnectTask?.cancel()
+        disconnectTask = nil
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        let oldConnection = connection
+        connection = nil
+        oldConnection?.cancel()
+        receiveBuffer.removeAll()
+        lastPacketAt = nil
+        isReceivingAudio = false
+        isWaitingForBroadcast = listener != nil
+        onStreamEnded?()
     }
 
     private func scheduleStreamEnd(after seconds: TimeInterval) {

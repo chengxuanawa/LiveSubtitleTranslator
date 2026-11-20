@@ -12,4 +12,8 @@ enum AudioStreamProtocol {
     static let heartbeatInterval: TimeInterval = 1
     /// 超过该时间没有收到任何包（音频或心跳）即认为连接已失效
     static let streamTimeout: TimeInterval = 5
+    /// 广播结束标记：用户停止共享时由扩展立即发送，主 App 收到后立刻收尾
+    /// 不使用长度 0（那是心跳），用固定 4 字节负载与音频区分
+    static let stopPayload = Data("STOP".utf8)
+    static let stopPacket = Data([0, 0, 0, 4]) + stopPayload
 }

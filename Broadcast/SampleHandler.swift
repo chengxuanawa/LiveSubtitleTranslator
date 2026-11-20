@@ -57,8 +57,16 @@ final class SampleHandler: RPBroadcastSampleHandler {
             self.pendingPackets.removeAll()
             let oldConnection = self.connection
             self.connection = nil
-            oldConnection?.cancel()
             self.setConnected(false)
+            guard let oldConnection else { return }
+            // 立即通知主 App 共享已停止，避免它等心跳超时才收尾
+            oldConnection.send(content: AudioStreamProtocol.stopPacket, completion: .contentProcessed { _ in
+                oldConnection.cancel()
+            })
+            // 兜底：发送回调异常时也要在短时间内释放连接
+            self.queue.asyncAfter(deadline: .now() + 0.8) {
+                oldConnection.cancel()
+            }
         }
     }
 
