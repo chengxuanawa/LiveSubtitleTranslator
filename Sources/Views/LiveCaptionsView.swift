@@ -91,7 +91,12 @@ struct LiveCaptionsView: View {
     private func transcriptColumn(isLandscape: Bool, windowControlsInset: CGFloat) -> some View {
         segmentList(isLandscape: isLandscape)
             .safeAreaInset(edge: .top, spacing: 0) {
+                // 顶栏背后的柔和模糊：列表上滚到标题栏下方时逐渐虚化淡出
                 header(isLandscape: isLandscape, windowControlsInset: windowControlsInset)
+                    .background {
+                        SoftTopBlurView()
+                            .ignoresSafeArea(edges: .top)
+                    }
             }
     }
 }

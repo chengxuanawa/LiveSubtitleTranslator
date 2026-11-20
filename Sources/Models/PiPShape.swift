@@ -42,4 +42,20 @@ enum PiPShape: String, CaseIterable, Identifiable {
         case .strip: return 0.18
         }
     }
+
+    /// 原文最多显示的行数；超出后自动滚动显示最新内容
+    var originalMaxLines: Int {
+        switch self {
+        case .standard: return 2
+        case .strip: return 1
+        }
+    }
+
+    /// 译文最多显示的行数；超出后自动滚动显示最新内容
+    var translatedMaxLines: Int {
+        switch self {
+        case .standard: return 2
+        case .strip: return 1
+        }
+    }
 }

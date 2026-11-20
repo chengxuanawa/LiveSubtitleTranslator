@@ -3,8 +3,9 @@ import AVKit
 import QuartzCore
 import UIKit
 
-/// 字幕画中画：把最新字幕渲染成视频帧，通过 AVSampleBufferDisplayLayer + AVPictureInPictureController
-/// 送入系统画中画窗口（iPad / iPhone 均支持）。受系统限制，无法“启动即进入画中画”，需用户点击触发。
+/// 字幕画中画：把最新字幕渲染成视频帧，经 AVSampleBufferDisplayLayer 送入系统画中画窗口。
+/// 优先使用视频通话内容源（窗口支持双指缩放），系统拒绝时自动退回样本缓冲内容源。
+/// 受系统限制，无法“启动即进入画中画”，需用户点击触发。
 @MainActor
 final class CaptionPictureInPictureController: NSObject, ObservableObject {
 
@@ -39,7 +40,12 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         }
     }
 
-    private let displayLayer = AVSampleBufferDisplayLayer()
+    private let displayView = PiPDisplayView()
+    private var displayLayer: AVSampleBufferDisplayLayer { displayView.displayLayer }
+    /// 视频通话内容控制器：系统按它呈现的窗口支持双指缩放（iPad）
+    private var videoCallViewController: AVPictureInPictureVideoCallViewController?
+    /// 优先用视频通话内容源以获得可缩放的画中画窗口；系统拒绝时退回样本缓冲内容源
+    private var prefersVideoCallSource = true
     private var contentSource: AVPictureInPictureController.ContentSource?
     private var pipController: AVPictureInPictureController?
     private var hostView: UIView?
@@ -52,6 +58,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        displayView.backgroundColor = .clear
         displayLayer.videoGravity = .resizeAspect
         // 样本缓冲显示层需要时间基准才能按时渲染，否则画中画里会是黑屏
         var timebase: CMTimebase?
@@ -67,16 +74,44 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         }
     }
 
-    /// 内容源必须在显示层加入窗口后再创建，否则 iPhone 上可能永远无法进入画中画
+    /// 内容源必须在宿主视图加入窗口后再创建，否则 iPhone 上可能永远无法进入画中画
     private func ensureController() {
-        guard pipController == nil else { return }
-        let source = AVPictureInPictureController.ContentSource(
-            sampleBufferDisplayLayer: displayLayer,
-            playbackDelegate: self
-        )
+        guard pipController == nil, let hostView else { return }
+        let source: AVPictureInPictureController.ContentSource
+        if prefersVideoCallSource {
+            let contentViewController = PiPCaptionVideoCallViewController()
+            // 内容尺寸决定画中画窗口的宽高比
+            contentViewController.preferredContentSize = shape.renderSize
+            contentViewController.view.backgroundColor = .clear
+            // 先给内容视图一个有效尺寸，保证首帧样本缓冲有可渲染区域
+            contentViewController.view.frame = CGRect(origin: .zero, size: shape.renderSize)
+            displayView.removeFromSuperview()
+            displayView.autoresizingMask = []
+            displayView.frame = contentViewController.view.bounds
+            contentViewController.view.addSubview(displayView)
+            contentViewController.onLayout = { [weak self, weak contentViewController] in
+                guard let self, let contentViewController else { return }
+                self.displayView.frame = contentViewController.view.bounds
+            }
+            videoCallViewController = contentViewController
+            source = AVPictureInPictureController.ContentSource(
+                activeVideoCallSourceView: hostView,
+                contentViewController: contentViewController
+            )
+        } else {
+            displayView.removeFromSuperview()
+            displayView.frame = hostView.bounds
+            hostView.addSubview(displayView)
+            source = AVPictureInPictureController.ContentSource(
+                sampleBufferDisplayLayer: displayLayer,
+                playbackDelegate: self
+            )
+        }
         let controller = AVPictureInPictureController(contentSource: source)
         controller.delegate = self
-        controller.requiresLinearPlayback = true
+        if !prefersVideoCallSource {
+            controller.requiresLinearPlayback = true
+        }
         contentSource = source
         pipController = controller
 
@@ -132,6 +167,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         pendingStart = false
         pipController?.stopPictureInPicture()
         teardownController()
+        // 下次开启重新尝试视频通话内容源（可缩放的画中画窗口）
+        prefersVideoCallSource = true
         hostView?.removeFromSuperview()
         hostView = nil
         if isActive {
@@ -147,6 +184,8 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         pipController?.delegate = nil
         pipController = nil
         contentSource = nil
+        displayView.removeFromSuperview()
+        videoCallViewController = nil
     }
 
     /// 更新画中画内容（仅在画中画激活时渲染）
@@ -171,14 +210,15 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         let originalScale = min(1.6, max(0.6, scales.original))
         let translatedScale = min(1.6, max(0.6, scales.translated))
         // 让显示层保持与视频一致的宽高比，系统据此决定画中画窗口比例
-        fitDisplayLayer(to: size)
+        updateDisplayLayout(for: size)
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { context in
             Self.drawBackground(in: context.cgContext, size: size)
 
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .left
-            paragraph.lineBreakMode = .byTruncatingTail
+            // 允许按宽度换行，先测量完整高度，再按形状限定的行数裁剪
+            paragraph.lineBreakMode = .byWordWrapping
             paragraph.lineSpacing = 1
 
             // 画中画窗口有圆角，左右留足内边距，避免文字被圆角切掉
@@ -207,61 +247,96 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
                 .paragraphStyle: paragraph,
                 .shadow: shadow,
             ]
-            let originalBound = (original as NSString).boundingRect(
-                with: CGSize(width: contentRect.width, height: contentRect.height * 0.62),
+            let originalFullBound = (original as NSString).boundingRect(
+                with: CGSize(width: contentRect.width, height: 10_000),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 attributes: originalAttributes,
                 context: nil
             ).integral
+            let originalMaxHeight = Self.maxTextHeight(
+                font: originalFont,
+                lines: shape.originalMaxLines,
+                lineSpacing: paragraph.lineSpacing
+            )
+            let originalDisplayHeight = min(originalFullBound.height, originalMaxHeight)
+            // 超过限定行数时改为显示最后几行（最新内容）
+            let originalOverflow = max(0, originalFullBound.height - originalDisplayHeight)
 
-            var translatedBound = CGRect.zero
             var translatedAttributes: [NSAttributedString.Key: Any] = [:]
+            var translatedFullBound = CGRect.zero
+            var translatedDisplayHeight: CGFloat = 0
+            var translatedOverflow: CGFloat = 0
             if let translated {
+                let translatedFont = UIFont.systemFont(
+                    ofSize: size.height * shape.translatedFontRatio * translatedScale,
+                    weight: .medium
+                )
                 translatedAttributes = [
-                    .font: UIFont.systemFont(
-                        ofSize: size.height * shape.translatedFontRatio * translatedScale,
-                        weight: .medium
-                    ),
+                    .font: translatedFont,
                     // 译文用略带透明度的白色，和原文形成层级但不抢眼
                     .foregroundColor: UIColor.white.withAlphaComponent(0.88),
                     .paragraphStyle: paragraph,
                     .shadow: shadow,
                 ]
-                translatedBound = (translated as NSString).boundingRect(
-                    with: CGSize(
-                        width: contentRect.width,
-                        height: max(0, contentRect.height - originalBound.height - gap)
-                    ),
+                translatedFullBound = (translated as NSString).boundingRect(
+                    with: CGSize(width: contentRect.width, height: 10_000),
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
                     attributes: translatedAttributes,
                     context: nil
                 ).integral
+                // 译文最多显示固定行数，且不能挤占原文之外的剩余空间
+                let translatedMaxHeight = Self.maxTextHeight(
+                    font: translatedFont,
+                    lines: shape.translatedMaxLines,
+                    lineSpacing: paragraph.lineSpacing
+                )
+                let available = max(0, contentRect.height - originalDisplayHeight - gap)
+                translatedDisplayHeight = min(translatedFullBound.height, min(translatedMaxHeight, available))
+                translatedOverflow = max(0, translatedFullBound.height - translatedDisplayHeight)
             }
 
-            let totalHeight = originalBound.height
-                + (translatedBound.height > 0 ? gap + translatedBound.height : 0)
+            let totalHeight = originalDisplayHeight
+                + (translatedDisplayHeight > 0 ? gap + translatedDisplayHeight : 0)
             let startY = contentRect.minY + max(0, (contentRect.height - totalHeight) / 2)
 
+            // 裁剪到可见行数，文字超出时向上滚动显示最新一行
+            context.cgContext.saveGState()
+            context.cgContext.clip(to: CGRect(
+                x: contentRect.minX,
+                y: startY,
+                width: contentRect.width,
+                height: originalDisplayHeight
+            ))
             (original as NSString).draw(
                 in: CGRect(
                     x: contentRect.minX,
-                    y: startY,
+                    y: startY - originalOverflow,
                     width: contentRect.width,
-                    height: originalBound.height
+                    height: originalFullBound.height
                 ),
                 withAttributes: originalAttributes
             )
+            context.cgContext.restoreGState()
 
-            if let translated, translatedBound.height > 0 {
+            if let translated, translatedDisplayHeight > 0 {
+                let translatedTop = startY + originalDisplayHeight + gap
+                context.cgContext.saveGState()
+                context.cgContext.clip(to: CGRect(
+                    x: contentRect.minX,
+                    y: translatedTop,
+                    width: contentRect.width,
+                    height: translatedDisplayHeight
+                ))
                 (translated as NSString).draw(
                     in: CGRect(
                         x: contentRect.minX,
-                        y: startY + originalBound.height + gap,
+                        y: translatedTop - translatedOverflow,
                         width: contentRect.width,
-                        height: translatedBound.height
+                        height: translatedFullBound.height
                     ),
                     withAttributes: translatedAttributes
                 )
+                context.cgContext.restoreGState()
             }
         }
         guard let cgImage = image.cgImage,
@@ -277,6 +352,14 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             attachmentMode: kCMAttachmentMode_ShouldPropagate
         )
         displayLayer.enqueue(sampleBuffer)
+    }
+
+    /// 限定行数下文字的最大高度（含行距，留 2pt 余量避免裁到降部）
+    private static func maxTextHeight(font: UIFont, lines: Int, lineSpacing: CGFloat) -> CGFloat {
+        let lineCount = CGFloat(max(1, lines))
+        return ceil(font.lineHeight) * lineCount
+            + lineSpacing * CGFloat(max(0, lines - 1))
+            + 2
     }
 
     // MARK: - 配色
@@ -372,8 +455,15 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         return sampleBuffer
     }
 
-    /// 显示层按视频宽高比在窗口内居中，避免整窗比例覆盖画中画窗口形状
-    private func fitDisplayLayer(to videoSize: CGSize) {
+    /// 视频通话内容源由系统铺满窗口；样本缓冲内容源需要按视频宽高比在宿主视图内居中
+    private func updateDisplayLayout(for videoSize: CGSize) {
+        if prefersVideoCallSource {
+            if let contentView = videoCallViewController?.view,
+               contentView.bounds.width > 0, contentView.bounds.height > 0 {
+                displayView.frame = contentView.bounds
+            }
+            return
+        }
         guard let hostView else { return }
         let bounds = hostView.bounds
         guard bounds.width > 0, bounds.height > 0,
@@ -382,7 +472,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         let fitted = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        displayLayer.frame = CGRect(
+        displayView.frame = CGRect(
             x: (bounds.width - fitted.width) / 2,
             y: (bounds.height - fitted.height) / 2,
             width: fitted.width,
@@ -397,17 +487,31 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
                 .compactMap { $0 as? UIWindowScene }
                 .flatMap { $0.windows }
             guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return }
-            // 用整窗大小承载显示层并放到最底层，避免 2×2 的宿主视图导致画中画黑屏
+            // 用整窗大小的透明宿主作为画中画动画的起始/恢复位置
             let host = UIView(frame: window.bounds)
             host.isUserInteractionEnabled = false
             host.backgroundColor = .clear
             window.insertSubview(host, at: 0)
-            host.layer.addSublayer(displayLayer)
             hostView = host
         }
-        // 必须在创建 ContentSource 之前把显示层调成目标画幅，
-        // 否则系统会按整窗（竖屏）比例锁定画中画窗口
-        fitDisplayLayer(to: shape.renderSize)
+    }
+}
+
+/// 画中画内容视图：图层直接使用 AVSampleBufferDisplayLayer
+private final class PiPDisplayView: UIView {
+    override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
+    var displayLayer: AVSampleBufferDisplayLayer {
+        layer as! AVSampleBufferDisplayLayer
+    }
+}
+
+/// 视频通话式画中画的内容控制器：布局变化时把显示层铺满，窗口缩放后内容跟着适配
+private final class PiPCaptionVideoCallViewController: AVPictureInPictureVideoCallViewController {
+    var onLayout: (@MainActor () -> Void)?
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        onLayout?()
     }
 }
 
@@ -441,6 +545,8 @@ extension CaptionPictureInPictureController: AVPictureInPictureSampleBufferPlayb
 extension CaptionPictureInPictureController: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStartPictureInPicture(_ controller: AVPictureInPictureController) {
         isActive = true
+        // 内容控制器此时已完成布局，按实际窗口尺寸铺满显示层
+        updateDisplayLayout(for: shape.renderSize)
         onStateChange?(true)
     }
 
@@ -457,6 +563,17 @@ extension CaptionPictureInPictureController: AVPictureInPictureControllerDelegat
     ) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // 视频通话内容源被系统拒绝时退回样本缓冲内容源，保证画中画仍能使用
+            if self.prefersVideoCallSource {
+                self.prefersVideoCallSource = false
+                self.isActive = false
+                self.onStateChange?(false)
+                self.teardownController()
+                if self.start(), let content = self.lastContent {
+                    self.update(original: content.original, translated: content.translated)
+                }
+                return
+            }
             self.isActive = false
             self.onStateChange?(false)
             self.teardownController()
