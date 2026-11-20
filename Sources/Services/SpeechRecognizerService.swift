@@ -23,12 +23,15 @@ protocol SpeechRecognizing: AnyObject {
     func startExternalAudio() async
     /// 向识别请求喂入外部音频缓冲
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer)
+    /// 外部音频识别是否已成功启动并在运行（用于判断启动是否失败）
+    var isExternalAudioRunning: Bool { get }
 }
 
 /// 默认实现：非 Speech 引擎（如 WhisperKit）可按需覆盖
 extension SpeechRecognizing {
     func startExternalAudio() async {}
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {}
+    var isExternalAudioRunning: Bool { true }
 }
 
 /// 基于 iOS 26 SpeechAnalyzer + SpeechTranscriber 的实时语音识别实现。
@@ -197,11 +200,14 @@ final class SpeechRecognizerService: SpeechRecognizing {
         )
     }
 
+    var isExternalAudioRunning: Bool { isRunning && isExternalAudio }
+
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {
         guard isRunning, let continuation = inputContinuation else {
             externalAudioBacklog.append(buffer)
-            if externalAudioBacklog.count > 64 {
-                externalAudioBacklog.removeFirst(externalAudioBacklog.count - 64)
+            // 最多缓存约 4.5 秒音频：识别模型准备期间不丢开头，也不会无限增长
+            if externalAudioBacklog.count > 200 {
+                externalAudioBacklog.removeFirst(externalAudioBacklog.count - 200)
             }
             return
         }

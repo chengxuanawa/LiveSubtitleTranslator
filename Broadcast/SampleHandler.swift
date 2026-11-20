@@ -17,6 +17,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private var targetFormat: AVAudioFormat?
+    /// 断线期间暂存的音频包：重连成功后立即补发，避免每次重连丢开头音频
+    private var pendingPackets: [Data] = []
+    /// 最多暂存的音频包数量（约 5 秒）
+    private static let maxPendingPackets = 250
 
     private var connected: Bool {
         stateLock.lock()
@@ -50,6 +54,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             self.isBroadcasting = false
             self.reconnectScheduled = false
             self.heartbeatScheduled = false
+            self.pendingPackets.removeAll()
             let oldConnection = self.connection
             self.connection = nil
             oldConnection?.cancel()
@@ -61,18 +66,13 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
         guard sampleBufferType == .audioApp || sampleBufferType == .audioMic else { return }
-        guard connected else {
-            // 还没连上主 App 时尝试补连，避免首次连接失败后再也不重试
-            queue.async { [weak self] in
-                self?.scheduleReconnect()
-            }
-            return
-        }
-        autoreleasepool {
-            guard let packet = makePacket(from: sampleBuffer) else { return }
-            // 发送放到串行队列，保证线程安全与音频包顺序
-            queue.async { [weak self] in
-                self?.send(packet)
+        // ReplayKit 可能在不同线程回调音频：转换与发包统一放到串行队列，
+        // 否则共用 AVAudioConverter 会因并发丢包甚至崩溃（表现为偶发抓不到声音）
+        queue.async { [weak self] in
+            guard let self, self.isBroadcasting else { return }
+            autoreleasepool {
+                guard let packet = self.makePacket(from: sampleBuffer) else { return }
+                self.send(packet)
             }
         }
     }
@@ -94,6 +94,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             switch state {
             case .ready:
                 self.setConnected(true)
+                self.flushPendingPackets()
                 self.startHeartbeat()
             case .failed, .cancelled, .waiting:
                 self.setConnected(false)
@@ -143,7 +144,12 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     private func send(_ packet: Data) {
-        guard let connection, connected else { return }
+        guard let connection, connected else {
+            // 连接尚未就绪或刚断开：先缓存，等重连成功后补发
+            enqueuePending(packet)
+            scheduleReconnect()
+            return
+        }
         connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
             guard let self, let connection, error != nil, self.connection === connection else { return }
             // 发送失败说明连接已经不可用，主动标记断线并重连，避免录屏还在跑但没有音频
@@ -152,6 +158,24 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 self.scheduleReconnect()
             }
         })
+    }
+
+    /// 断线期间缓存音频包，数量超限时丢弃最旧的，避免扩展内存持续增长
+    private func enqueuePending(_ packet: Data) {
+        pendingPackets.append(packet)
+        if pendingPackets.count > Self.maxPendingPackets {
+            pendingPackets.removeFirst(pendingPackets.count - Self.maxPendingPackets)
+        }
+    }
+
+    /// 重连成功后将断线期间积累的音频按顺序补发
+    private func flushPendingPackets() {
+        guard !pendingPackets.isEmpty else { return }
+        let packets = pendingPackets
+        pendingPackets.removeAll()
+        for packet in packets {
+            send(packet)
+        }
     }
 
     // MARK: - 音频转换与打包

@@ -18,7 +18,7 @@ extension LiveCaptionsView {
         VStack(alignment: .leading, spacing: 6) {
             if revealedText.isEmpty {
                 if viewModel.liveDisplayText.isEmpty {
-                    Text(viewModel.isRecognitionPaused ? "已暂停识别，录屏仍在继续" : "正在聆听…")
+                    Text(viewModel.livePlaceholderText)
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

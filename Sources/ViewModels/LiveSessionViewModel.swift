@@ -34,6 +34,16 @@ final class LiveSessionViewModel: ObservableObject {
     var liveDisplayText: String {
         pendingText + livePartialText
     }
+    /// 实时气泡占位文案：区分暂停、等待共享音频与正常聆听，便于确认通道是否接上
+    var livePlaceholderText: String {
+        if isRecognitionPaused {
+            return "已暂停识别，录屏仍在继续"
+        }
+        if audioSourceMode == .systemAudio, isWaitingForBroadcast {
+            return "等待系统共享音频…"
+        }
+        return "正在聆听…"
+    }
     /// 灵动岛字幕是否已开启（由用户手动触发或按设置自动开启）
     @Published private(set) var isLiveActivityActive = false
     /// 系统音频模式下是否正在等待广播连接
@@ -83,6 +93,16 @@ final class LiveSessionViewModel: ObservableObject {
     private var externalRecognitionGeneration = 0
     /// 广播开始时 App 在后台，画中画自动启动被推迟到回到前台
     private var pendingAutoPiPStart = false
+    /// 识别启动时刻：用于判断启动是否卡死（例如后台模型准备迟迟不返回）
+    private var externalRecognitionStartAt: Date?
+    /// 最近一次识别错误文案：恢复成功后自动清除对应提示
+    private var lastRecognitionError: String?
+    /// 识别异常自动重启的次数与时间窗，避免错误持续时无限重试
+    private var recognitionRetryCount = 0
+    private var lastRecognitionRetryAt = Date.distantPast
+    private var recognitionRestartTask: Task<Void, Never>?
+    /// 系统共享音频期间的自愈看门狗：保持监听、恢复保活、重启失效的识别
+    private var systemAudioWatchdogTask: Task<Void, Never>?
 
     // MARK: - AI 分段缓冲
 
@@ -328,6 +348,7 @@ final class LiveSessionViewModel: ObservableObject {
         // 否则旧会话已失效时新的音频会全部被丢弃。
         if state == .listening, isExternalRecognitionRunning {
             keepAlive.start()
+            startSystemAudioWatchdog()
             return
         }
 
@@ -345,6 +366,7 @@ final class LiveSessionViewModel: ObservableObject {
         // 广播期间保持后台运行，确保本地音频服务器不被挂起
         keepAlive.start()
         autoStartVisualIfNeeded()
+        startSystemAudioWatchdog()
 
         startExternalRecognitionIfNeeded()
     }
@@ -355,6 +377,9 @@ final class LiveSessionViewModel: ObservableObject {
         isExternalRecognitionRunning = false
         externalRecognitionGeneration += 1
         let generation = externalRecognitionGeneration
+        externalRecognitionStartAt = Date()
+        // 上一次识别已失效时，残留的实时预览不再可信
+        resetPartialPreview()
 
         Task { [weak self] in
             guard let self else { return }
@@ -365,11 +390,18 @@ final class LiveSessionViewModel: ObservableObject {
             await self.speechRecognizer.startExternalAudio()
             guard generation == self.externalRecognitionGeneration else { return }
             self.isStartingExternalRecognition = false
-            if self.errorMessage != nil {
-                self.stop()
-            } else {
-                self.isExternalRecognitionRunning = true
+            self.externalRecognitionStartAt = nil
+            guard self.speechRecognizer.isExternalAudioRunning else {
+                // 启动失败不结束整场共享会话：错误已由 handleError 记录，看门狗限次重试
+                return
             }
+            self.isExternalRecognitionRunning = true
+            self.recognitionRetryCount = 0
+            // 识别恢复后自动清掉之前的识别错误提示，但保留通道类提示
+            if let lastError = self.lastRecognitionError, self.errorMessage == lastError {
+                self.errorMessage = nil
+            }
+            self.lastRecognitionError = nil
         }
     }
 
@@ -389,6 +421,64 @@ final class LiveSessionViewModel: ObservableObject {
         errorMessage = "系统音频通道已中断，正在重连；若仍未恢复，请结束共享后重新开始。"
     }
 
+    // MARK: - 系统音频自愈
+
+    /// 共享期间每 3 秒自检：恢复被系统打断的保活、重建失效的监听器、
+    /// 重启启动失败或卡死的识别会话，避免出现「广播在跑但一直没字幕」。
+    private func startSystemAudioWatchdog() {
+        guard systemAudioWatchdogTask == nil else { return }
+        systemAudioWatchdogTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.runSystemAudioWatchdogTick()
+            }
+        }
+    }
+
+    private func runSystemAudioWatchdogTick() {
+        guard state == .listening, audioSourceMode == .systemAudio else { return }
+        // 保活播放器可能被来电或媒体服务重置打断，未在播放时重新拉起
+        keepAlive.ensureRunning()
+        // 监听器被系统取消或端口丢失时自动重建（start 内部会判断状态）
+        systemAudioServer.start()
+
+        guard systemAudioServer.isReceivingAudio else { return }
+        // 启动卡死超过 20 秒：作废本次启动，允许重新开始
+        if isStartingExternalRecognition {
+            if let startedAt = externalRecognitionStartAt,
+               Date().timeIntervalSince(startedAt) > 20 {
+                externalRecognitionGeneration += 1
+                isStartingExternalRecognition = false
+                externalRecognitionStartAt = nil
+            } else {
+                return
+            }
+        }
+        guard !isExternalRecognitionRunning, !isRecognitionPaused else { return }
+        startExternalRecognitionIfNeeded()
+    }
+
+    /// 记录一次识别重启；60 秒内最多 3 次，避免不可恢复的错误无限循环
+    private func registerRecognitionRetry() -> Bool {
+        let now = Date()
+        if now.timeIntervalSince(lastRecognitionRetryAt) > 60 {
+            recognitionRetryCount = 0
+        }
+        lastRecognitionRetryAt = now
+        recognitionRetryCount += 1
+        return recognitionRetryCount <= 3
+    }
+
+    private func scheduleRecognitionRestart() {
+        recognitionRestartTask?.cancel()
+        recognitionRestartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, let self, self.state == .listening else { return }
+            self.startExternalRecognitionIfNeeded()
+        }
+    }
+
     // MARK: - 收尾
 
     func stop() {
@@ -396,6 +486,7 @@ final class LiveSessionViewModel: ObservableObject {
         pendingAutoPiPStart = false
         externalRecognitionGeneration += 1
         isStartingExternalRecognition = false
+        externalRecognitionStartAt = nil
         isExternalRecognitionRunning = false
         cancelBroadcastPreparation()
         speechRecognizer.stop()
@@ -453,6 +544,11 @@ final class LiveSessionViewModel: ObservableObject {
     /// 新录制开始前重置会话数据与所有缓冲区
     private func resetForNewRecording() {
         isRecognitionPaused = false
+        recognitionRetryCount = 0
+        lastRecognitionRetryAt = .distantPast
+        lastRecognitionError = nil
+        recognitionRestartTask?.cancel()
+        recognitionRestartTask = nil
         segments = []
         failedTranslationIDs.removeAll()
         resetPartialPreview()
@@ -462,6 +558,10 @@ final class LiveSessionViewModel: ObservableObject {
 
     /// 统一关闭灵动岛 / 画中画并停止静音保活
     private func teardownOutputs() {
+        systemAudioWatchdogTask?.cancel()
+        systemAudioWatchdogTask = nil
+        recognitionRestartTask?.cancel()
+        recognitionRestartTask = nil
         liveActivity.end()
         keepAlive.stop()
         pipController.stop()
@@ -544,7 +644,24 @@ final class LiveSessionViewModel: ObservableObject {
     private func handleError(_ message: String) {
         cancelBroadcastPreparation()
         errorMessage = message
+        lastRecognitionError = message
         isRecognitionPaused = false
+        // 作废在途的识别启动，避免旧任务稍后把状态改回去
+        externalRecognitionGeneration += 1
+        isStartingExternalRecognition = false
+        externalRecognitionStartAt = nil
+        isExternalRecognitionRunning = false
+
+        // 广播仍在继续时只重启识别，不结束整场共享会话；
+        // 否则一次偶发的识别中断就会让后面的音频全部没人接收
+        if state == .listening,
+           audioSourceMode == .systemAudio,
+           systemAudioServer.isReceivingAudio,
+           registerRecognitionRetry() {
+            scheduleRecognitionRestart()
+            return
+        }
+
         flushPendingBuffer()
         state = .ended
         teardownOutputs()

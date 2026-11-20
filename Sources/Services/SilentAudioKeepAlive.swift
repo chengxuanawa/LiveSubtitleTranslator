@@ -9,8 +9,46 @@ final class SilentAudioKeepAlive {
 
     private var player: AVAudioPlayer?
     private var silentURL: URL?
+    /// 是否处于「需要保活」状态：stop() 后不再自动恢复，避免停止识别后还被中断回调拉起
+    private var isActive = false
+    private var interruptionObserver: NSObjectProtocol?
+    private var mediaServicesObserver: NSObjectProtocol?
+
+    init() {
+        let center = NotificationCenter.default
+        // 来电、视频会议等会打断播放器；打断结束后必须重新拉起，否则 App 会在后台被挂起
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                self?.handleInterruption(notification)
+            }
+        }
+        mediaServicesObserver = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.resumeIfNeeded()
+            }
+        }
+    }
+
+    deinit {
+        let center = NotificationCenter.default
+        if let interruptionObserver {
+            center.removeObserver(interruptionObserver)
+        }
+        if let mediaServicesObserver {
+            center.removeObserver(mediaServicesObserver)
+        }
+    }
 
     func start() {
+        isActive = true
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
@@ -37,10 +75,33 @@ final class SilentAudioKeepAlive {
         }
     }
 
+    /// 周期性自检：播放器被系统停掉时重新拉起（仅在保活期间生效）
+    func ensureRunning() {
+        guard isActive else { return }
+        if let player, player.isPlaying { return }
+        start()
+    }
+
     func stop() {
+        isActive = false
         player?.stop()
         player = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// 打断或媒体服务重置后恢复播放；直接 start() 会重新激活会话并重建播放器
+    private func resumeIfNeeded() {
+        guard isActive else { return }
+        start()
+    }
+
+    /// 只在打断结束时恢复：打断进行中强行激活会话会与来电等业务抢占音频
+    private func handleInterruption(_ notification: Notification) {
+        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+        if type == .ended {
+            resumeIfNeeded()
+        }
     }
 
     // MARK: - 静音 WAV
