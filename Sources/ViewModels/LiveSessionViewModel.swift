@@ -39,7 +39,7 @@ final class LiveSessionViewModel: ObservableObject {
         if isRecognitionPaused {
             return "已暂停识别，录屏仍在继续"
         }
-        if audioSourceMode == .systemAudio, isWaitingForBroadcast {
+        if audioSourceMode == .systemAudio, state != .listening {
             return "等待系统共享音频…"
         }
         return "正在聆听…"
@@ -103,6 +103,8 @@ final class LiveSessionViewModel: ObservableObject {
     private var recognitionRestartTask: Task<Void, Never>?
     /// 系统共享音频期间的自愈看门狗：保持监听、恢复保活、重启失效的识别
     private var systemAudioWatchdogTask: Task<Void, Never>?
+    /// 点击广播按钮后的连接看门狗：扩展启动慢或监听器在后台失效时自动重建
+    private var broadcastStartupWatchdogTask: Task<Void, Never>?
 
     // MARK: - AI 分段缓冲
 
@@ -224,17 +226,24 @@ final class LiveSessionViewModel: ObservableObject {
             prepareSystemAudioServer()
             return
         }
-        if state == .listening, !systemAudioServer.hasRecentActivity {
-            // 连接看似还在但已收不到心跳：整体重建监听器，保留当前会话等待扩展重连
-            systemAudioServer.restartListener()
-            isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
-            isExternalRecognitionRunning = false
+        if state == .listening {
+            if !systemAudioServer.hasRecentActivity {
+                // 连接看似还在但已收不到心跳：整体重建监听器，保留当前会话等待扩展重连
+                systemAudioServer.restartListener()
+                isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
+                isExternalRecognitionRunning = false
+                return
+            }
+            prepareSystemAudioServer()
+            if !isExternalRecognitionRunning {
+                startExternalRecognitionIfNeeded()
+            }
             return
         }
-        prepareSystemAudioServer()
-        if state == .listening, !isExternalRecognitionRunning {
-            startExternalRecognitionIfNeeded()
-        }
+        // 还没进入收听状态：系统共享可能已经开始，但监听器在后台被挂起后表面仍是 ready，
+        // 实际不再接受连接。重建后等广播扩展自动重连（扩展会补发断线期间的音频）。
+        systemAudioServer.restartListener()
+        isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
     }
 
     /// App 进入后台：只标记状态，不结束会话；后台收不到心跳属于正常现象。
@@ -262,6 +271,8 @@ final class LiveSessionViewModel: ObservableObject {
             // 结束共享时也要保持音频会话，直到系统控件真正停止广播
             return
         }
+        // 开始共享：确保监听器在系统选择器期间保持可用
+        startBroadcastStartupWatchdog()
         broadcastPreparationTask?.cancel()
         broadcastPreparationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 60_000_000_000)
@@ -343,6 +354,8 @@ final class LiveSessionViewModel: ObservableObject {
     // MARK: - 系统音频模式
 
     private func handleBroadcastStarted() {
+        broadcastStartupWatchdogTask?.cancel()
+        broadcastStartupWatchdogTask = nil
         isWaitingForBroadcast = false
         // 广播已经重新连接：即使界面还停在 listening，也要确认识别会话仍在运行，
         // 否则旧会话已失效时新的音频会全部被丢弃。
@@ -422,6 +435,32 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     // MARK: - 系统音频自愈
+
+    /// 点击广播按钮后启动：扩展冷启动较慢，或主 App 的监听器在后台失效时，
+    /// 周期性重建监听器，直到收到广播连接（最多约 90 秒）。
+    private func startBroadcastStartupWatchdog() {
+        broadcastStartupWatchdogTask?.cancel()
+        broadcastStartupWatchdogTask = Task { @MainActor [weak self] in
+            let deadline = Date().addingTimeInterval(90)
+            // 首次点击后立刻重建一次，排除监听器在后台挂起后“假 ready”的情况
+            var lastRestartAt = Date.distantPast
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                guard self.state != .listening else {
+                    self.broadcastStartupWatchdogTask = nil
+                    return
+                }
+                // 每 9 秒重建一次，给广播扩展留出重连窗口
+                guard Date().timeIntervalSince(lastRestartAt) >= 9 else { continue }
+                lastRestartAt = Date()
+                self.systemAudioServer.restartListener()
+                self.isWaitingForBroadcast = self.systemAudioServer.isWaitingForBroadcast
+            }
+            guard let self else { return }
+            self.broadcastStartupWatchdogTask = nil
+        }
+    }
 
     /// 共享期间每 3 秒自检：恢复被系统打断的保活、重建失效的监听器、
     /// 重启启动失败或卡死的识别会话，避免出现「广播在跑但一直没字幕」。
@@ -558,6 +597,8 @@ final class LiveSessionViewModel: ObservableObject {
 
     /// 统一关闭灵动岛 / 画中画并停止静音保活
     private func teardownOutputs() {
+        broadcastStartupWatchdogTask?.cancel()
+        broadcastStartupWatchdogTask = nil
         systemAudioWatchdogTask?.cancel()
         systemAudioWatchdogTask = nil
         recognitionRestartTask?.cancel()

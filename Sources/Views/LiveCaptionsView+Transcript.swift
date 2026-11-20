@@ -30,7 +30,9 @@ extension LiveCaptionsView {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if settings.realtimeTranslationEnabled, !viewModel.isRecognitionPaused {
+            if settings.realtimeTranslationEnabled,
+               !viewModel.isRecognitionPaused,
+               viewModel.state == .listening {
                 HStack(alignment: .top, spacing: 8) {
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(Color.accentColor)
@@ -140,7 +142,9 @@ extension LiveCaptionsView {
                         .id(segment.id)
                     }
 
-                    if !viewModel.liveDisplayText.isEmpty || viewModel.state == .listening {
+                    if !viewModel.liveDisplayText.isEmpty
+                        || viewModel.state == .listening
+                        || (viewModel.audioSourceMode == .systemAudio && viewModel.isWaitingForBroadcast) {
                         liveBubble
                     }
 
