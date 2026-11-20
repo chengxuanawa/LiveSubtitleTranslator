@@ -155,7 +155,7 @@ final class LiveSessionViewModel: ObservableObject {
         }
         // 系统录屏开始/结束时立即响应，不依赖广播扩展的首次连接是否成功
         screenCaptureObserver = NotificationCenter.default.addObserver(
-            forName: UIScreen.isCapturedDidChangeNotification,
+            forName: UIScreen.capturedDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
