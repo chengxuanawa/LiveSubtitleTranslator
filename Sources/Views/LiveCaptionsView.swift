@@ -27,9 +27,12 @@ struct LiveCaptionsView: View {
     @AppStorage("autoScrollResumeSeconds") var autoScrollResumeSeconds: Double = 0
     /// 调整时间时显示的气泡
     @State var showLockTimePopup = false
-    @State var lockTimePopupTask: Task<Void, Never>?
-    /// 拖动波形图标设定时间的起始值
+    /// 拖动条纹图标设定时间的起始值
     @State var lockTimeDragStart: Double?
+    /// 按住定时条纹时放大反馈
+    @State var isLockTimeExpanded = false
+    /// 按住定时条纹的起始时刻，用于区分单点与拖动
+    @State var lockTimePressStartedAt: Date?
 
     var body: some View {
         GeometryReader { proxy in

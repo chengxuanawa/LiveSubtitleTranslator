@@ -193,9 +193,9 @@ extension LiveCaptionsView {
             .softTopEdgeEffect()
             .overlay(alignment: .trailing) {
                 ZStack(alignment: .trailing) {
-                    if autoScrollLocked, viewModel.state == .listening {
+                    if viewModel.state == .listening {
                         autoScrollLockControl(proxy)
-                            .padding(.bottom, isLandscape ? 24 : 120)
+                            .padding(.bottom, isLandscape ? 96 : 120)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
@@ -247,11 +247,13 @@ extension LiveCaptionsView {
         scrollToBottom(proxy, animated: true, force: true)
     }
 
-    /// 右侧悬浮控制：上方波形图标拖动设定自动返回秒数，下方突起箭头一键回到最新
+    /// 右侧悬浮控制：条纹定时手柄（常驻）+ 固定时的“回到最新”小舌
     private func autoScrollLockControl(_ proxy: ScrollViewProxy) -> some View {
         VStack(spacing: 8) {
-            waveTimeHandle(proxy)
-            returnToLatestTab(proxy)
+            stripeTimeHandle(proxy)
+            if autoScrollLocked {
+                returnToLatestTab(proxy)
+            }
         }
     }
 
@@ -259,58 +261,99 @@ extension LiveCaptionsView {
         autoScrollResumeSeconds >= 1 ? "\(Int(autoScrollResumeSeconds)) 秒" : "一直固定"
     }
 
-    /// 波形图标：上下拖动调时间，点按给出触感反馈并弹出当前时间
-    private func waveTimeHandle(_ proxy: ScrollViewProxy) -> some View {
-        Image(systemName: "waveform")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.primary)
-            .frame(width: 34, height: 44)
-            .background {
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 17,
-                    bottomLeadingRadius: 17,
-                    style: .continuous
-                )
-                .fill(.ultraThinMaterial)
+    /// 条纹宽度（两端短、中间长），参考系统刻度的样子
+    private static let stripeWidths: [CGFloat] = [5, 6, 8, 11, 15, 22, 15, 11, 8, 6, 5]
+
+    private var stripeColor: Color {
+        autoScrollLocked ? Color.accentColor.opacity(0.75) : Color.primary.opacity(0.3)
+    }
+
+    private var stripeStrongColor: Color {
+        autoScrollLocked ? Color.accentColor : Color.primary.opacity(0.8)
+    }
+
+    /// 刻度条纹手柄：按住放大并在旁边显示时间，上下拖动定时，单点一直固定
+    private func stripeTimeHandle(_ proxy: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(Self.stripeWidths.enumerated()), id: \.offset) { index, width in
+                Capsule()
+                    .fill(index == Self.stripeWidths.count / 2 ? stripeStrongColor : stripeColor)
+                    .frame(width: width, height: 2)
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                showLockTimePopupBriefly()
-            }
-            .gesture(
-                DragGesture(minimumDistance: 4)
-                    .onChanged { value in
-                        if lockTimeDragStart == nil {
-                            lockTimeDragStart = autoScrollResumeSeconds
-                            showLockTimePopupBriefly(hold: true)
-                        }
-                        let start = lockTimeDragStart ?? 0
-                        let seconds = (start - value.translation.height / 3).rounded()
-                        let clamped = min(30, max(0, seconds))
-                        guard clamped != autoScrollResumeSeconds else { return }
-                        autoScrollResumeSeconds = clamped
-                        UISelectionFeedbackGenerator().selectionChanged()
-                        lockAutoScroll(proxy)
-                    }
-                    .onEnded { _ in
-                        lockTimeDragStart = nil
-                        showLockTimePopupBriefly()
-                    }
+        }
+        .frame(width: 26, alignment: .leading)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 7)
+        .frame(width: 34)
+        .background {
+            UnevenRoundedRectangle(
+                topLeadingRadius: 17,
+                bottomLeadingRadius: 17,
+                style: .continuous
             )
-            .overlay(alignment: .leading) {
-                if showLockTimePopup {
-                    Text(lockTimeText)
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .glassEffect(.regular, in: Capsule())
-                        .fixedSize()
-                        .offset(x: -58)
-                        .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .trailing)))
+            .fill(.ultraThinMaterial)
+        }
+        .contentShape(Rectangle())
+        .scaleEffect(isLockTimeExpanded ? 1.28 : 1, anchor: .trailing)
+        .animation(.spring(response: 0.26, dampingFraction: 0.72), value: isLockTimeExpanded)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if lockTimeDragStart == nil {
+                        lockTimeDragStart = autoScrollResumeSeconds
+                        lockTimePressStartedAt = Date()
+                        withAnimation { isLockTimeExpanded = true }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        showLockTimePopup()
+                    }
+                    // 轻微抖动不算调时间，避免单点被误判成拖动
+                    guard abs(value.translation.height) > 3 else { return }
+                    let start = lockTimeDragStart ?? 0
+                    let seconds = (start - value.translation.height / 3).rounded()
+                    let clamped = min(30, max(0, seconds))
+                    guard clamped != autoScrollResumeSeconds else { return }
+                    autoScrollResumeSeconds = clamped
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    lockAutoScroll(proxy)
+                    showLockTimePopup()
                 }
+                .onEnded { value in
+                    let heldFor = lockTimePressStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+                    let isTap = heldFor < 0.3 && abs(value.translation.height) < 5
+                    lockTimeDragStart = nil
+                    lockTimePressStartedAt = nil
+                    withAnimation { isLockTimeExpanded = false }
+                    if isTap {
+                        // 单点：直接一直固定，仅变色，不浮出时间窗
+                        autoScrollResumeSeconds = 0
+                        lockAutoScroll(proxy)
+                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        hideLockTimePopup()
+                    } else if autoScrollResumeSeconds < 1 {
+                        hideLockTimePopup()
+                    }
+                    // 定时值会在锁定期间持续显示在左侧小窗里
+                }
+        )
+        .overlay(alignment: .leading) {
+            if showLockTimePopup || (autoScrollLocked && autoScrollResumeSeconds >= 1) {
+                Text(lockTimeText)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(autoScrollLocked ? Color.accentColor : Color.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .glassEffect(.regular, in: Capsule())
+                    .fixedSize()
+                    .offset(x: -62)
+                    .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .trailing)))
             }
-            .accessibilityLabel("自动回到实时时间：\(lockTimeText)")
+        }
+        .onChange(of: autoScrollLocked) { _, locked in
+            if !locked {
+                hideLockTimePopup()
+            }
+        }
+        .accessibilityLabel("字幕自动滚动定时：\(lockTimeText)，单点一直固定，按住上下拖动调时间")
     }
 
     /// 从右边缘突起的箭头：点击回到最新字幕并解除固定
@@ -336,19 +379,18 @@ extension LiveCaptionsView {
         .accessibilityLabel("回到最新")
     }
 
-    /// 弹出时间气泡并自动收起；拖动期间保持显示
-    private func showLockTimePopupBriefly(hold: Bool = false) {
-        lockTimePopupTask?.cancel()
+    /// 显示时间气泡：按住期间实时反馈；定时值在锁定期间持续显示
+    private func showLockTimePopup() {
         withAnimation(.snappy(duration: 0.18)) {
             showLockTimePopup = true
         }
-        guard !hold else { return }
-        lockTimePopupTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_300_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                showLockTimePopup = false
-            }
+    }
+
+    /// 立即收起时间气泡（单点一直固定时不需要时间窗）
+    private func hideLockTimePopup() {
+        guard showLockTimePopup else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            showLockTimePopup = false
         }
     }
 
