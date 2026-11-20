@@ -161,47 +161,91 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         fitDisplayLayer(to: size)
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { context in
-            UIColor.black.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
+            Self.drawBackground(in: context.cgContext, size: size)
 
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .left
             paragraph.lineBreakMode = .byTruncatingTail
+            paragraph.lineSpacing = 1
 
             // 画中画窗口有圆角，左右留足内边距，避免文字被圆角切掉
-            let horizontalPadding = size.height * 0.22
-            let verticalPadding = size.height * 0.08
+            let horizontalPadding = min(size.height * 0.18, size.width * 0.06)
+            let verticalPadding = size.height * 0.10
             let contentRect = CGRect(
                 x: horizontalPadding,
                 y: verticalPadding,
                 width: size.width - horizontalPadding * 2,
                 height: size.height - verticalPadding * 2
             )
-            let originalHeight = contentRect.height * 0.52
-            let gap: CGFloat = size.height * 0.03
+            let gap: CGFloat = size.height * 0.04
 
+            let shadow = NSShadow()
+            shadow.shadowColor = UIColor.black.withAlphaComponent(0.28)
+            shadow.shadowBlurRadius = max(2, size.height * 0.008)
+            shadow.shadowOffset = CGSize(width: 0, height: max(1, size.height * 0.003))
+
+            let originalFont = UIFont.systemFont(
+                ofSize: size.height * shape.originalFontRatio,
+                weight: .semibold
+            )
             let originalAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: size.height * 0.26, weight: .semibold),
+                .font: originalFont,
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph,
+                .shadow: shadow,
             ]
+            let originalBound = (original as NSString).boundingRect(
+                with: CGSize(width: contentRect.width, height: contentRect.height * 0.62),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: originalAttributes,
+                context: nil
+            ).integral
+
+            var translatedBound = CGRect.zero
+            var translatedAttributes: [NSAttributedString.Key: Any] = [:]
+            if let translated {
+                translatedAttributes = [
+                    .font: UIFont.systemFont(
+                        ofSize: size.height * shape.translatedFontRatio,
+                        weight: .medium
+                    ),
+                    // 译文用略带透明度的白色，和原文形成层级但不抢眼
+                    .foregroundColor: UIColor.white.withAlphaComponent(0.88),
+                    .paragraphStyle: paragraph,
+                    .shadow: shadow,
+                ]
+                translatedBound = (translated as NSString).boundingRect(
+                    with: CGSize(
+                        width: contentRect.width,
+                        height: max(0, contentRect.height - originalBound.height - gap)
+                    ),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: translatedAttributes,
+                    context: nil
+                ).integral
+            }
+
+            let totalHeight = originalBound.height
+                + (translatedBound.height > 0 ? gap + translatedBound.height : 0)
+            let startY = contentRect.minY + max(0, (contentRect.height - totalHeight) / 2)
+
             (original as NSString).draw(
-                in: CGRect(x: contentRect.minX, y: contentRect.minY, width: contentRect.width, height: originalHeight),
+                in: CGRect(
+                    x: contentRect.minX,
+                    y: startY,
+                    width: contentRect.width,
+                    height: originalBound.height
+                ),
                 withAttributes: originalAttributes
             )
 
-            if let translated {
-                let translatedAttributes: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: size.height * 0.21, weight: .medium),
-                    .foregroundColor: UIColor.systemYellow,
-                    .paragraphStyle: paragraph,
-                ]
+            if let translated, translatedBound.height > 0 {
                 (translated as NSString).draw(
                     in: CGRect(
                         x: contentRect.minX,
-                        y: contentRect.minY + originalHeight + gap,
+                        y: startY + originalBound.height + gap,
                         width: contentRect.width,
-                        height: contentRect.height - originalHeight - gap
+                        height: translatedBound.height
                     ),
                     withAttributes: translatedAttributes
                 )
@@ -220,6 +264,37 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             attachmentMode: kCMAttachmentMode_ShouldPropagate
         )
         displayLayer.enqueue(sampleBuffer)
+    }
+
+    // MARK: - 配色
+
+    /// 参考系统实时字幕的蓝色玻璃底：亮蓝到深蓝渐变 + 顶部高光
+    private static func drawBackground(in context: CGContext, size: CGSize) {
+        let space = CGColorSpaceCreateDeviceRGB()
+        let baseColors = [
+            UIColor(red: 0.22, green: 0.47, blue: 1.00, alpha: 1).cgColor,
+            UIColor(red: 0.05, green: 0.20, blue: 0.68, alpha: 1).cgColor,
+        ] as CFArray
+        if let gradient = CGGradient(colorsSpace: space, colors: baseColors, locations: [0, 1]) {
+            context.drawLinearGradient(
+                gradient,
+                start: .zero,
+                end: CGPoint(x: size.width, y: size.height),
+                options: []
+            )
+        }
+        let highlightColors = [
+            UIColor.white.withAlphaComponent(0.16).cgColor,
+            UIColor.white.withAlphaComponent(0).cgColor,
+        ] as CFArray
+        if let highlight = CGGradient(colorsSpace: space, colors: highlightColors, locations: [0, 1]) {
+            context.drawLinearGradient(
+                highlight,
+                start: .zero,
+                end: CGPoint(x: 0, y: size.height * 0.55),
+                options: []
+            )
+        }
     }
 
     private func makeSampleBuffer(from image: CGImage, size: CGSize) -> CMSampleBuffer? {

@@ -26,4 +26,20 @@ enum PiPShape: String, CaseIterable, Identifiable {
         case .strip: return CGSize(width: 2100, height: 300)
         }
     }
+
+    /// 原文字号占画布高度的比例（iPad 的大窗口需要更克制的字号）
+    var originalFontRatio: CGFloat {
+        switch self {
+        case .standard: return 0.115
+        case .strip: return 0.23
+        }
+    }
+
+    /// 译文字号占画布高度的比例
+    var translatedFontRatio: CGFloat {
+        switch self {
+        case .standard: return 0.095
+        case .strip: return 0.18
+        }
+    }
 }
