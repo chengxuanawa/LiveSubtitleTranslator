@@ -16,6 +16,10 @@ final class SettingsStore: ObservableObject {
     @AppStorage("visualModeRaw") private var visualModeRaw = VisualMode.auto.rawValue
     /// 画中画窗口形状
     @AppStorage("pipShapeRaw") private var pipShapeRaw = PiPShape.standard.rawValue
+    /// 画中画原文字号缩放（1.0 为默认，允许 0.6–1.6）
+    @AppStorage("pipOriginalFontScale") private var pipOriginalFontScaleRaw = 1.0
+    /// 画中画译文字号缩放
+    @AppStorage("pipTranslatedFontScale") private var pipTranslatedFontScaleRaw = 1.0
     /// 是否开启实时翻译（录制中可通过主按钮左侧的玻璃按钮切换）
     @AppStorage("realtimeTranslationEnabled") var realtimeTranslationEnabled = true
     /// 识别期间是否阻止屏幕自动熄灭
@@ -50,6 +54,24 @@ final class SettingsStore: ObservableObject {
     var pipShape: PiPShape {
         get { PiPShape(rawValue: pipShapeRaw) ?? .standard }
         set { pipShapeRaw = newValue.rawValue }
+    }
+
+    /// 画中画原文字号倍率
+    var pipOriginalFontScale: Double {
+        get { min(1.6, max(0.6, pipOriginalFontScaleRaw)) }
+        set {
+            pipOriginalFontScaleRaw = min(1.6, max(0.6, newValue))
+            objectWillChange.send()
+        }
+    }
+
+    /// 画中画译文字号倍率
+    var pipTranslatedFontScale: Double {
+        get { min(1.6, max(0.6, pipTranslatedFontScaleRaw)) }
+        set {
+            pipTranslatedFontScaleRaw = min(1.6, max(0.6, newValue))
+            objectWillChange.send()
+        }
     }
 
     /// 识别时保持屏幕常亮；切换后手动通知界面刷新

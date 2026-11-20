@@ -74,6 +74,12 @@ struct LiveCaptionsView: View {
             .onChange(of: settings.keepScreenOnWhileRecognizing) { _, _ in
                 viewModel.refreshIdleTimer()
             }
+            .onChange(of: settings.pipOriginalFontScale) { _, _ in
+                viewModel.refreshPictureInPicture()
+            }
+            .onChange(of: settings.pipTranslatedFontScale) { _, _ in
+                viewModel.refreshPictureInPicture()
+            }
             .onDisappear {
                 revealTask?.cancel()
                 revealTask = nil
@@ -87,6 +93,5 @@ struct LiveCaptionsView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 header(isLandscape: isLandscape, windowControlsInset: windowControlsInset)
             }
-            .softTopEdgeEffect()
     }
 }

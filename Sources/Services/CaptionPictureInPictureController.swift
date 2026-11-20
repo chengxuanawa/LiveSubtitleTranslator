@@ -13,6 +13,9 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
     /// 进入/退出画中画时回调
     var onStateChange: ((Bool) -> Void)?
 
+    /// 原文字号 / 译文字号缩放倍率（由设置注入，建议范围 0.6–1.6）
+    var fontScaleProvider: (@MainActor () -> (original: CGFloat, translated: CGFloat))?
+
     /// 画中画窗口形状（默认 / 长条）
     var shape: PiPShape = .standard {
         didSet {
@@ -153,10 +156,20 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
         render(original: original, translated: translated)
     }
 
+    /// 设置变化后按当前内容立即重绘（如字号调节）
+    func refresh() {
+        guard isActive else { return }
+        render(original: lastContent?.original ?? "", translated: lastContent?.translated)
+    }
+
     // MARK: - 渲染
 
     private func render(original: String, translated: String?) {
         let size = shape.renderSize
+        // 设置中的字号倍率；夹在 0.6–1.6，避免异常值撑破画布
+        let scales = fontScaleProvider?() ?? (original: 1, translated: 1)
+        let originalScale = min(1.6, max(0.6, scales.original))
+        let translatedScale = min(1.6, max(0.6, scales.translated))
         // 让显示层保持与视频一致的宽高比，系统据此决定画中画窗口比例
         fitDisplayLayer(to: size)
         let renderer = UIGraphicsImageRenderer(size: size)
@@ -185,7 +198,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             shadow.shadowOffset = CGSize(width: 0, height: max(1, size.height * 0.003))
 
             let originalFont = UIFont.systemFont(
-                ofSize: size.height * shape.originalFontRatio,
+                ofSize: size.height * shape.originalFontRatio * originalScale,
                 weight: .semibold
             )
             let originalAttributes: [NSAttributedString.Key: Any] = [
@@ -206,7 +219,7 @@ final class CaptionPictureInPictureController: NSObject, ObservableObject {
             if let translated {
                 translatedAttributes = [
                     .font: UIFont.systemFont(
-                        ofSize: size.height * shape.translatedFontRatio,
+                        ofSize: size.height * shape.translatedFontRatio * translatedScale,
                         weight: .medium
                     ),
                     // 译文用略带透明度的白色，和原文形成层级但不抢眼

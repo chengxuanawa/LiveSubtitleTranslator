@@ -118,6 +118,13 @@ final class LiveSessionViewModel: ObservableObject {
         pipController.onStateChange = { [weak self] active in
             self?.isPictureInPictureActive = active
         }
+        // 字号在设置里可分别调节原文与译文，渲染时实时读取
+        pipController.fontScaleProvider = { [weak settings] in
+            (
+                original: CGFloat(settings?.pipOriginalFontScale ?? 1),
+                translated: CGFloat(settings?.pipTranslatedFontScale ?? 1)
+            )
+        }
         wireCallbacks()
         // App 启动即开始监听系统音频端口：即使用户在其他页签或从控制中心
         // 直接开始共享，广播扩展也能连上，不会因为页面未出现而检测不到
@@ -274,6 +281,11 @@ final class LiveSessionViewModel: ObservableObject {
         _ = pipController.start()
         let preview = livePartialText.isEmpty ? "正在聆听…" : livePartialText
         pipController.update(original: preview, translated: nil)
+    }
+
+    /// 画中画字号设置变化后立即按当前字幕重绘
+    func refreshPictureInPicture() {
+        pipController.refresh()
     }
 
     /// 暂停 / 继续系统共享音频的识别；广播与录屏保持运行，不中断采集

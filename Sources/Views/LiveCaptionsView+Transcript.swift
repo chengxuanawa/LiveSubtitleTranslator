@@ -185,6 +185,8 @@ extension LiveCaptionsView {
                     autoScrollLocked = false
                 }
             }
+            // 直接作用在 ScrollView 上，确保 iOS 26 的 soft 顶部边缘效果生效
+            .softTopEdgeEffect()
             .overlay(alignment: .trailing) {
                 ZStack(alignment: .trailing) {
                     if autoScrollLocked, viewModel.state == .listening {

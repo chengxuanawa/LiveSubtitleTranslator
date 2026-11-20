@@ -94,10 +94,39 @@ struct SettingsView: View {
                     Text(shape.displayName).tag(shape.rawValue)
                 }
             }
+            pipFontScaleRow(
+                title: "画中画原文字号",
+                value: Binding(
+                    get: { settings.pipOriginalFontScale },
+                    set: { settings.pipOriginalFontScale = $0 }
+                )
+            )
+            pipFontScaleRow(
+                title: "画中画译文字号",
+                value: Binding(
+                    get: { settings.pipTranslatedFontScale },
+                    set: { settings.pipTranslatedFontScale = $0 }
+                )
+            )
         } header: {
             Text("灵动岛与小窗口")
         } footer: {
-            Text("自动模式：有灵动岛的 iPhone 使用灵动岛，iPad 等机型默认使用画中画小窗口。「长条」画中画更适合单行字幕；识别中切换形状会自动按新比例重开小窗。")
+            Text("自动模式：有灵动岛的 iPhone 使用灵动岛，iPad 等机型默认使用画中画小窗口。「长条」画中画更适合单行字幕；识别中切换形状会自动按新比例重开小窗。字号仅影响画中画字幕，原文与译文可分别调节。")
+        }
+    }
+
+    /// 画中画字号滑块：标题 + 百分比，范围 60%–160%
+    private func pipFontScaleRow(title: String, value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("\(Int((value.wrappedValue * 100).rounded()))%")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: value, in: 0.6...1.6, step: 0.05)
+                .accessibilityLabel(title)
         }
     }
 
