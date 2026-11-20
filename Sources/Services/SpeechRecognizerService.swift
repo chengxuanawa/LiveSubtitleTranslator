@@ -57,8 +57,9 @@ final class SpeechRecognizerService: SpeechRecognizing {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var analyzerFormat: AVAudioFormat?
-    private var externalConverter: AVAudioConverter?
-    private var externalInputFormat: AVAudioFormat?
+    /// 外部音频重采样放到后台串行队列，避免每个音频包占用主线程
+    private let externalAudioQueue = DispatchQueue(label: "com.example.sublingo.external.audio", qos: .userInitiated)
+    private let externalConverterBox = ExternalAudioConverter()
 
     private var isTapInstalled = false
     private var isRunning = false
@@ -213,15 +214,12 @@ final class SpeechRecognizerService: SpeechRecognizing {
         }
 
         let targetFormat = analyzerFormat ?? buffer.format
-        if externalConverter == nil
-            || externalInputFormat?.sampleRate != buffer.format.sampleRate
-            || externalInputFormat?.channelCount != buffer.format.channelCount {
-            externalConverter = AVAudioConverter(from: buffer.format, to: targetFormat)
-            externalInputFormat = buffer.format
+        // 重采样在后台串行队列完成，保持音频顺序且不阻塞主线程
+        let converterBox = externalConverterBox
+        externalAudioQueue.async {
+            guard let converted = converterBox.convert(buffer, to: targetFormat) else { return }
+            continuation.yield(AnalyzerInput(buffer: converted))
         }
-        guard let converter = externalConverter,
-              let converted = Self.convert(buffer, using: converter, to: targetFormat) else { return }
-        continuation.yield(AnalyzerInput(buffer: converted))
     }
 
     private func flushExternalAudioBacklog() {
@@ -369,10 +367,11 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
         self.analyzer = nil
         analyzerFormat = nil
-        externalConverter = nil
-        externalInputFormat = nil
         if deactivateAudioSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            // 会话失活可能阻塞，放到后台执行，避免停止识别时卡住主线程
+            DispatchQueue.global(qos: .utility).async {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         }
     }
 
@@ -403,6 +402,46 @@ final class SpeechRecognizerService: SpeechRecognizing {
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
         guard capacity > 0,
               let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+
+        var supplied = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if supplied {
+                status.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard error == nil, output.frameLength > 0 else { return nil }
+        return output
+    }
+}
+
+/// 外部音频 → 识别格式转换器：只在串行后台队列上调用，避免重采样占用主线程
+private final class ExternalAudioConverter {
+    private var converter: AVAudioConverter?
+    private var inputFormat: AVAudioFormat?
+    private var outputFormat: AVAudioFormat?
+
+    func convert(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let input = buffer.format
+        if converter == nil
+            || inputFormat?.sampleRate != input.sampleRate
+            || inputFormat?.channelCount != input.channelCount
+            || outputFormat?.sampleRate != targetFormat.sampleRate
+            || outputFormat?.channelCount != targetFormat.channelCount {
+            converter = AVAudioConverter(from: input, to: targetFormat)
+            inputFormat = input
+            outputFormat = targetFormat
+        }
+        guard let converter else { return nil }
+
+        let ratio = targetFormat.sampleRate / input.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
+        guard capacity > 0,
+              let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return nil }
 
         var supplied = false
         var error: NSError?

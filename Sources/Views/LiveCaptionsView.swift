@@ -33,6 +33,9 @@ struct LiveCaptionsView: View {
     @State var isLockTimeExpanded = false
     /// 按住定时条纹的起始时刻，用于区分单点与拖动
     @State var lockTimePressStartedAt: Date?
+    /// 系统共享面板正在唤起：给出即时反馈并避免重复点击排队
+    @State var isSystemPanelRequesting = false
+    @State var systemPanelRequestTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { proxy in

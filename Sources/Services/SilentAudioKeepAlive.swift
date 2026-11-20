@@ -13,6 +13,9 @@ final class SilentAudioKeepAlive {
     private var isActive = false
     private var interruptionObserver: NSObjectProtocol?
     private var mediaServicesObserver: NSObjectProtocol?
+    /// 音频会话的激活/失活可能阻塞主线程，统一放到串行后台队列
+    private let sessionQueue = DispatchQueue(label: "com.example.sublingo.keepalive.session")
+    private var isStarting = false
 
     init() {
         let center = NotificationCenter.default
@@ -49,16 +52,33 @@ final class SilentAudioKeepAlive {
 
     func start() {
         isActive = true
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
-        } catch {
-            return
+        if let player, player.isPlaying { return }
+        guard !isStarting else { return }
+        isStarting = true
+        // 会话激活在后台完成，避免点按共享按钮时卡住主线程、系统面板迟迟不出现
+        sessionQueue.async { [weak self] in
+            let session = AVAudioSession.sharedInstance()
+            var activated = false
+            do {
+                try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try session.setActive(true)
+                activated = true
+            } catch {
+                activated = false
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isStarting = false
+                guard activated, self.isActive else { return }
+                self.setupPlayerIfNeeded()
+            }
         }
-        if let player, player.play() {
-            return
-        }
+    }
+
+    /// 会话就绪后创建/恢复播放器
+    private func setupPlayerIfNeeded() {
+        guard isActive else { return }
+        if let player, player.play() { return }
         player?.stop()
         self.player = nil
         guard let url = makeSilentWAV() else { return }
@@ -86,7 +106,10 @@ final class SilentAudioKeepAlive {
         isActive = false
         player?.stop()
         player = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // 失活同样放到后台，避免结束共享时主线程被音频会话卡住
+        sessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     /// 打断或媒体服务重置后恢复播放；直接 start() 会重新激活会话并重建播放器

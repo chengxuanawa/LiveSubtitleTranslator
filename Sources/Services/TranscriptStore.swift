@@ -7,7 +7,6 @@ final class TranscriptStore: ObservableObject {
     @Published private(set) var sessions: [TranscriptSession] = []
 
     private let directoryURL: URL
-    private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     init() {
@@ -15,8 +14,6 @@ final class TranscriptStore: ObservableObject {
         directoryURL = documents.appendingPathComponent("Transcripts", isDirectory: true)
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
-        encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
@@ -24,16 +21,31 @@ final class TranscriptStore: ObservableObject {
     }
 
     func save(_ session: TranscriptSession) {
-        do {
-            let url = fileURL(for: session)
-            let data = try encoder.encode(session)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            #if DEBUG
-            print("[TranscriptStore] 保存失败：\(error.localizedDescription)")
-            #endif
+        // 内存列表先即时更新，磁盘编码/写入放到后台，避免结束共享时卡住主线程
+        upsert(session)
+        let url = fileURL(for: session)
+        Task.detached(priority: .utility) {
+            do {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(session)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                #if DEBUG
+                print("[TranscriptStore] 保存失败：\(error.localizedDescription)")
+                #endif
+            }
         }
-        reload()
+    }
+
+    /// 按 id 覆盖或插入，并维持按开始时间倒序
+    private func upsert(_ session: TranscriptSession) {
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index] = session
+        } else {
+            sessions.append(session)
+        }
+        sessions.sort { $0.startedAt > $1.startedAt }
     }
 
     func delete(_ session: TranscriptSession) {

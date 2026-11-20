@@ -29,6 +29,8 @@ final class LiveSessionViewModel: ObservableObject {
     /// 等待 AI 整理分段的已识别文本（实时气泡会继续展示）
     @Published private(set) var pendingText = ""
     @Published var errorMessage: String?
+    /// 中性提示（例如已停止识别但系统共享仍在录制）
+    @Published private(set) var infoMessage: String?
 
     /// 实时气泡展示的完整文本：待整理片段 + 当前实时部分
     var liveDisplayText: String {
@@ -105,6 +107,10 @@ final class LiveSessionViewModel: ObservableObject {
     private var systemAudioWatchdogTask: Task<Void, Never>?
     /// 点击广播按钮后的连接看门狗：扩展启动慢或监听器在后台失效时自动重建
     private var broadcastStartupWatchdogTask: Task<Void, Never>?
+    /// 系统录屏/共享状态监听：开启即进入识别，停止即收尾
+    private var screenCaptureObserver: NSObjectProtocol?
+    /// 用户已在 App 内结束识别：等到系统共享真正停止前，忽略仍然到来的音频/连接
+    private var isBroadcastDismissedByUser = false
 
     // MARK: - AI 分段缓冲
 
@@ -147,10 +153,26 @@ final class LiveSessionViewModel: ObservableObject {
                 translated: CGFloat(settings?.pipTranslatedFontScale ?? 1)
             )
         }
+        // 系统录屏开始/结束时立即响应，不依赖广播扩展的首次连接是否成功
+        screenCaptureObserver = NotificationCenter.default.addObserver(
+            forName: UIScreen.isCapturedDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleScreenCaptureChange()
+            }
+        }
         wireCallbacks()
         // App 启动即开始监听系统音频端口：即使用户在其他页签或从控制中心
         // 直接开始共享，广播扩展也能连上，不会因为页面未出现而检测不到
         _ = systemAudioServer.start()
+    }
+
+    deinit {
+        if let screenCaptureObserver {
+            NotificationCenter.default.removeObserver(screenCaptureObserver)
+        }
     }
 
     private func wireCallbacks() {
@@ -165,7 +187,7 @@ final class LiveSessionViewModel: ObservableObject {
         }
 
         systemAudioServer.onAudioBuffer = { [weak self] buffer in
-            guard let self else { return }
+            guard let self, !self.isBroadcastDismissedByUser else { return }
             // 兜底检测：只要真的有共享音频进来，就视为广播已开始，
             // 避免连接就绪回调遗漏导致界面一直停在未开始状态
             if self.state != .listening {
@@ -176,7 +198,8 @@ final class LiveSessionViewModel: ObservableObject {
             self.speechRecognizer.appendExternalBuffer(buffer)
         }
         systemAudioServer.onStreamStarted = { [weak self] in
-            self?.handleBroadcastStarted()
+            guard let self, !self.isBroadcastDismissedByUser else { return }
+            self.handleBroadcastStarted()
         }
         systemAudioServer.onStreamEnded = { [weak self] in
             self?.handleBroadcastEnded()
@@ -246,12 +269,51 @@ final class LiveSessionViewModel: ObservableObject {
         isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
     }
 
+    /// 系统开始/停止录屏（含本 App 的广播共享）时立即响应：
+    /// 开始就直接进入识别，停止就立刻收尾；不再依赖扩展首次连接是否成功。
+    private func handleScreenCaptureChange() {
+        guard settings.audioSourceMode == .systemAudio else { return }
+        guard let screen = activeScreen else { return }
+        if screen.isCaptured {
+            // 用户已经在 App 内结束识别，只是系统共享还没停：不再自动恢复
+            guard !isBroadcastDismissedByUser else { return }
+            keepAlive.start()
+            if state == .listening {
+                // 已在收听：通道有活动就不打断，没有活动则重建监听等待扩展重连
+                if !systemAudioServer.hasRecentActivity {
+                    systemAudioServer.restartListener()
+                    isWaitingForBroadcast = systemAudioServer.isWaitingForBroadcast
+                    isExternalRecognitionRunning = false
+                }
+                return
+            }
+            // 录屏刚开始：直接建立会话并启动识别，音频到达后会立即喂入
+            handleBroadcastStarted()
+        } else {
+            // 系统共享真正停止：解除忽略标记，本次会话若仍在收听则立即收尾
+            isBroadcastDismissedByUser = false
+            infoMessage = nil
+            if state == .listening {
+                handleBroadcastEnded()
+            }
+        }
+    }
+
+    /// 当前场景所在的屏幕（窗口化 / 多窗口下取活跃场景）
+    private var activeScreen: UIScreen? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
+        return scene?.screen
+    }
+
     /// App 进入后台：只标记状态，不结束会话；后台收不到心跳属于正常现象。
     /// 注意 iPad 分屏时 App 可能只是 .inactive（仍可见、仍在工作），不能当成后台。
     func handleScenePhase(_ phase: ScenePhase) {
         systemAudioServer.setAppActive(phase != .background)
         if phase == .active {
             recoverSystemAudioIfNeeded()
+            // 后台期间可能错过录屏状态通知，前台补一次
+            handleScreenCaptureChange()
             if pendingAutoPiPStart, state == .listening {
                 pendingAutoPiPStart = false
                 autoStartVisualIfNeeded()
@@ -262,9 +324,25 @@ final class LiveSessionViewModel: ObservableObject {
         }
     }
 
+    /// 用户在 App 内点击结束共享：立即结束识别并保存记录，系统共享由用户在控制中心停止。
+    /// 系统广播面板可能迟迟不出现，不能让它决定收尾时机。
+    func endSystemAudioFromButton() {
+        isBroadcastDismissedByUser = true
+        if state == .listening {
+            stop()
+        }
+        infoMessage = "已停止识别；如果系统仍在共享屏幕，请在控制中心结束共享。"
+    }
+
+    func dismissInfoMessage() {
+        infoMessage = nil
+    }
+
     /// 打开系统广播选择器前调用：先启动本地监听和静音保活。
     /// App 在系统选择器出现后会立即进入后台，等到广播连上再启动保活可能已经被挂起。
     func prepareSystemAudioBroadcast() {
+        isBroadcastDismissedByUser = false
+        infoMessage = nil
         prepareSystemAudioServer()
         keepAlive.start()
         guard state != .listening else {
@@ -356,6 +434,8 @@ final class LiveSessionViewModel: ObservableObject {
     private func handleBroadcastStarted() {
         broadcastStartupWatchdogTask?.cancel()
         broadcastStartupWatchdogTask = nil
+        isBroadcastDismissedByUser = false
+        infoMessage = nil
         isWaitingForBroadcast = false
         // 广播已经重新连接：即使界面还停在 listening，也要确认识别会话仍在运行，
         // 否则旧会话已失效时新的音频会全部被丢弃。

@@ -15,6 +15,15 @@ extension LiveCaptionsView {
                     .onTapGesture { viewModel.dismissError() }
             }
 
+            if let message = viewModel.infoMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .padding(.horizontal, 4)
+                    .onTapGesture { viewModel.dismissInfoMessage() }
+            }
+
             HStack(spacing: 10) {
                 if viewModel.state == .listening {
                     // 液态玻璃容器：每个按钮独立响应按压形变，相邻玻璃自动融合成胶囊
@@ -115,12 +124,19 @@ extension LiveCaptionsView {
         Button {
             // 广播开始后 App 可能立刻退到后台，提前启动静音保活，避免本地监听被挂起
             viewModel.prepareSystemAudioBroadcast()
-            BroadcastPickerTrigger.shared.trigger()
+            presentSystemBroadcastPanel()
         } label: {
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 56, height: 56)
+            Group {
+                if isSystemPanelRequesting {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 24, weight: .semibold))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(width: 56, height: 56)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Circle())
@@ -151,20 +167,40 @@ extension LiveCaptionsView {
 
     private var stopButton: some View {
         Button {
-            // 录屏模式无法由 App 直接停止系统广播：弹出系统共享控件，
-            // 用户在控件里结束共享后，检测到音频流断开会自动收尾
-            viewModel.prepareSystemAudioBroadcast()
-            BroadcastPickerTrigger.shared.trigger()
+            // 系统共享面板唤起可能严重延迟，不能让它决定收尾时机：
+            // 先立即结束识别并保存，提示用户到控制中心结束屏幕共享
+            viewModel.endSystemAudioFromButton()
         } label: {
-            Image(systemName: "stop.fill")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 56, height: 56)
+            Group {
+                if isSystemPanelRequesting {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(width: 56, height: 56)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(Color.red).interactive(), in: Circle())
         .background(broadcastPickerHost)
         .accessibilityLabel("结束共享并停止识别")
+    }
+
+    /// 唤起系统共享面板：立即给出加载反馈，并在短时间内忽略重复点击，
+    /// 避免系统面板响应慢时多次点击排队、之后一起弹出
+    private func presentSystemBroadcastPanel() {
+        guard !isSystemPanelRequesting else { return }
+        isSystemPanelRequesting = true
+        systemPanelRequestTask?.cancel()
+        systemPanelRequestTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            isSystemPanelRequesting = false
+        }
+        BroadcastPickerTrigger.shared.trigger()
     }
 
     /// 系统广播选择器的透明宿主，供自定义按钮程序化调起共享控件

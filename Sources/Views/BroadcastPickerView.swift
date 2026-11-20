@@ -7,18 +7,31 @@ import UIKit
 final class BroadcastPickerTrigger {
     static let shared = BroadcastPickerTrigger()
     weak var picker: RPSystemBroadcastPickerView?
+    /// 正在唤起系统面板：冷却期内忽略重复点击，避免面板延迟时多次点击排队、之后一起弹出
+    private var isTriggering = false
 
-    /// 触发系统面板；选择器必须已挂到窗口上，否则推迟一帧再试，避免在已移除的视图上点击
-    func trigger(canRetry: Bool = true) {
-        guard let picker else { return }
-        guard picker.window != nil else {
-            guard canRetry else { return }
-            DispatchQueue.main.async { [weak self] in
-                self?.trigger(canRetry: false)
+    /// 触发系统共享面板；选择器或内部按钮尚未就绪时在随后几帧内自动重试
+    func trigger() {
+        guard !isTriggering else { return }
+        isTriggering = true
+        attempt(remaining: 12)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.isTriggering = false
+        }
+    }
+
+    private func attempt(remaining: Int) {
+        guard remaining > 0 else { return }
+        guard let picker,
+              picker.window != nil,
+              picker.bounds.width > 0,
+              let button = Self.findButton(in: picker) else {
+            // 选择器可能刚被 SwiftUI 重建，等下一帧再试
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                self?.attempt(remaining: remaining - 1)
             }
             return
         }
-        guard let button = Self.findButton(in: picker) else { return }
         button.sendActions(for: .touchUpInside)
     }
 
