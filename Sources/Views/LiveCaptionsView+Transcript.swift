@@ -304,7 +304,7 @@ extension LiveCaptionsView {
                         lockTimePressStartedAt = Date()
                         withAnimation { isLockTimeExpanded = true }
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        showLockTimePopup()
+                        revealLockTimePopup()
                     }
                     // 轻微抖动不算调时间，避免单点被误判成拖动
                     guard abs(value.translation.height) > 3 else { return }
@@ -315,7 +315,7 @@ extension LiveCaptionsView {
                     autoScrollResumeSeconds = clamped
                     UISelectionFeedbackGenerator().selectionChanged()
                     lockAutoScroll(proxy)
-                    showLockTimePopup()
+                    revealLockTimePopup()
                 }
                 .onEnded { value in
                     let heldFor = lockTimePressStartedAt.map { Date().timeIntervalSince($0) } ?? 0
@@ -380,7 +380,7 @@ extension LiveCaptionsView {
     }
 
     /// 显示时间气泡：按住期间实时反馈；定时值在锁定期间持续显示
-    private func showLockTimePopup() {
+    private func revealLockTimePopup() {
         withAnimation(.snappy(duration: 0.18)) {
             showLockTimePopup = true
         }
