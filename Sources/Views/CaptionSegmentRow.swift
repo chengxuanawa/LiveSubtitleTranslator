@@ -14,6 +14,8 @@ struct CaptionSegmentRow: View {
     var onPolishRequest: (() -> Void)? = nil
     /// 入场动画开始时回调，用于把 hasAnimated 写回数据源，避免列表复用重播
     var onReveal: (() -> Void)? = nil
+    /// 单击原文单词时回调（单词, 所在句子）
+    var onWordTap: ((_ word: String, _ sentence: String) -> Void)? = nil
 
     /// 原文 / 译文的模糊渐显进度
     @State private var originalProgress: Double
@@ -27,7 +29,8 @@ struct CaptionSegmentRow: View {
         showsPolishedHighlight: Bool = false,
         onRetryTranslation: (() -> Void)? = nil,
         onPolishRequest: (() -> Void)? = nil,
-        onReveal: (() -> Void)? = nil
+        onReveal: (() -> Void)? = nil,
+        onWordTap: ((_ word: String, _ sentence: String) -> Void)? = nil
     ) {
         self.segment = segment
         self.showTranslationFailure = showTranslationFailure
@@ -35,6 +38,7 @@ struct CaptionSegmentRow: View {
         self.onRetryTranslation = onRetryTranslation
         self.onPolishRequest = onPolishRequest
         self.onReveal = onReveal
+        self.onWordTap = onWordTap
         // 默认以最终状态显示：即使入场动画因列表复用、未出现在屏幕上而没有触发，
         // 文字也不会停在透明状态（动画开始时再临时归零）
         _originalProgress = State(initialValue: 1)
@@ -43,11 +47,16 @@ struct CaptionSegmentRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(segment.originalText)
-                .font(.body)
-                .fixedSize(horizontal: false, vertical: true)
-                .textRenderer(BlurTextRenderer(progress: originalProgress))
-                .offset(y: CGFloat(max(0, 1 - originalProgress)) * 10)
+            WordFlowText(
+                text: segment.originalText,
+                font: .body,
+                blurProgress: originalProgress,
+                onWordTap: { word in
+                    onWordTap?(word, segment.originalText)
+                }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .offset(y: CGFloat(max(0, 1 - originalProgress)) * 10)
 
             if let translated = segment.displayTranslatedText {
                 if showsPolishedHighlight, segment.polishedText != nil {

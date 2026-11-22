@@ -31,7 +31,7 @@ enum PiPShape: String, CaseIterable, Identifiable {
     var originalFontRatio: CGFloat {
         switch self {
         case .standard: return 0.115
-        case .strip: return 0.23
+        case .strip: return 0.21
         }
     }
 
@@ -39,7 +39,7 @@ enum PiPShape: String, CaseIterable, Identifiable {
     var translatedFontRatio: CGFloat {
         switch self {
         case .standard: return 0.095
-        case .strip: return 0.18
+        case .strip: return 0.17
         }
     }
 
@@ -47,7 +47,8 @@ enum PiPShape: String, CaseIterable, Identifiable {
     var originalMaxLines: Int {
         switch self {
         case .standard: return 2
-        case .strip: return 1
+        // 长条虽然很宽，但长句仍可能放不下：允许换到第二行
+        case .strip: return 2
         }
     }
 
@@ -55,6 +56,7 @@ enum PiPShape: String, CaseIterable, Identifiable {
     var translatedMaxLines: Int {
         switch self {
         case .standard: return 2
+        // 长条高度有限，译文保持一行，优先保证原文两行
         case .strip: return 1
         }
     }

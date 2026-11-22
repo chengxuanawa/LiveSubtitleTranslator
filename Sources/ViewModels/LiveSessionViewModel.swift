@@ -855,7 +855,10 @@ final class LiveSessionViewModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let segment = CaptionSegment(originalText: trimmed, startTime: startTime)
-        segments.append(segment)
+        // 新卡片从下方浮入，避免落库瞬间整段文字“闪现”到列表上方
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+            segments.append(segment)
+        }
         recentSegmentContext.append(trimmed)
         if recentSegmentContext.count > 3 {
             recentSegmentContext.removeFirst(recentSegmentContext.count - 3)

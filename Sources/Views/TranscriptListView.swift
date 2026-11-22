@@ -92,6 +92,8 @@ private struct TranscriptDetailView: View {
     @State private var isSummarizing = false
     /// 摘要卡片是否已展示（新摘要生成后淡入揭开）
     @State private var showSummary: Bool
+    /// 单词释义弹窗
+    @State private var wordLookupRequest: WordLookupRequest?
 
     init(session: TranscriptSession) {
         _session = State(initialValue: session)
@@ -109,7 +111,10 @@ private struct TranscriptDetailView: View {
                     CaptionSegmentRow(
                         segment: segment,
                         showsPolishedHighlight: true,
-                        onPolishRequest: { polish(segment) }
+                        onPolishRequest: { polish(segment) },
+                        onWordTap: { word, sentence in
+                            wordLookupRequest = WordLookupRequest(word: word, sentence: sentence)
+                        }
                     )
                 }
             }
@@ -120,6 +125,12 @@ private struct TranscriptDetailView: View {
         .navigationTitle("会话详情")
         .navigationBarTitleDisplayMode(.inline)
         .softTopEdgeEffect()
+        .sheet(item: $wordLookupRequest) { request in
+            WordLookupCard(request: request)
+                .presentationDetents([.height(300), .medium])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 summarizeButton

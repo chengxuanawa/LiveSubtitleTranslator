@@ -30,6 +30,8 @@ protocol TextAIProviding: AnyObject {
     /// 只插入换行做语义断句，返回按行排列的原句，不改写原文
     /// - Parameter context: 前几段已确定字幕，仅用于理解语境，不参与输出
     func segment(_ text: String, context: String?) async throws -> String?
+    /// 结合句子语境解释单词，输出语言为 outputLanguage（如「简体中文」）
+    func explainWord(_ word: String, sentence: String, outputLanguage: String) async throws -> String?
 }
 
 /// 断句提示词：仅允许插入换行，保证原文不被改写；支持带上下文理解

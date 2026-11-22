@@ -105,11 +105,12 @@ extension LiveCaptionsView {
                 }
                 let backlog = target.count - revealedText.count
                 guard backlog > 0 else { break }
-                let step = backlog > 12 ? 3 : (backlog > 5 ? 2 : 1)
+                // 积压越多一次吐得越多，避免长句逐字动画追不上识别速度
+                let step = backlog > 24 ? 6 : (backlog > 12 ? 4 : (backlog > 5 ? 2 : 1))
                 let end = target.index(target.startIndex, offsetBy: revealedText.count + step)
                 revealedText = String(target[..<end])
                 tailSettled = false
-                try? await Task.sleep(nanoseconds: 60_000_000)
+                try? await Task.sleep(nanoseconds: 35_000_000)
             }
             revealTask = nil
             // 退出瞬间目标又变长时补一次，避免漏字
@@ -137,9 +138,19 @@ extension LiveCaptionsView {
                                 && viewModel.failedTranslationIDs.contains(segment.id),
                             onRetryTranslation: { viewModel.retryTranslation(for: segment) },
                             onPolishRequest: { polish(segment) },
-                            onReveal: { viewModel.markSegmentAnimated(segment.id) }
+                            onReveal: { viewModel.markSegmentAnimated(segment.id) },
+                            onWordTap: { word, sentence in
+                                wordLookupRequest = WordLookupRequest(word: word, sentence: sentence)
+                            }
                         )
                         .id(segment.id)
+                        .transition(
+                            .asymmetric(
+                                insertion: .scale(scale: 0.94, anchor: .bottom)
+                                    .combined(with: .opacity),
+                                removal: .opacity
+                            )
+                        )
                     }
 
                     if !viewModel.liveDisplayText.isEmpty

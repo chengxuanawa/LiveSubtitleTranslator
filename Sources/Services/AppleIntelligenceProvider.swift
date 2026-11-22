@@ -12,6 +12,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
     private var summarizeSession: LanguageModelSession?
     private var polishSession: LanguageModelSession?
     private var segmentationSession: LanguageModelSession?
+    private var explainSession: LanguageModelSession?
 
     func summarize(_ text: String) async throws -> String? {
         let response = try await summarizeSessionValue().respond(
@@ -39,6 +40,21 @@ final class AppleIntelligenceProvider: TextAIProviding {
             options: GenerationOptions(temperature: 0.1)
         )
         return response.content
+    }
+
+    func explainWord(_ word: String, sentence: String, outputLanguage: String) async throws -> String? {
+        let response = try await explainSessionValue().respond(
+            to: """
+            单词：\(word)
+            所在句子：\(sentence)
+
+            请结合句子语境，用\(outputLanguage)简洁解释这个单词在这里的意思。
+            要求：只输出 1-2 句纯文本，不要 Markdown、编号或引号；词性明确时可用「词性. 」开头；
+            不要翻译整句，只解释该词。
+            """,
+            options: GenerationOptions(temperature: 0.3)
+        )
+        return AITextSanitizer.plainText(response.content)
     }
 
     // MARK: - 私有
@@ -81,6 +97,19 @@ final class AppleIntelligenceProvider: TextAIProviding {
         segmentationSession = session
         return session
     }
+
+    private func explainSessionValue() throws -> LanguageModelSession {
+        if let explainSession { return explainSession }
+        let session = LanguageModelSession(
+            instructions: Instructions {
+                "你是词典助手。用户会给出一个单词和它所在的句子，要求结合语境用指定语言解释该词。"
+                "只输出简洁的纯文本释义，不要翻译整句，不要解释过程或格式符号。"
+            }
+        )
+        session.prewarm()
+        explainSession = session
+        return session
+    }
 }
 
 /// 苹果智能可用性检查（iOS 26+ 专用）
@@ -113,6 +142,7 @@ final class AppleIntelligenceProvider: TextAIProviding {
     func summarize(_ text: String) async throws -> String? { nil }
     func polish(_ text: String, targetLanguage: String) async throws -> String? { nil }
     func segment(_ text: String, context: String?) async throws -> String? { nil }
+    func explainWord(_ word: String, sentence: String, outputLanguage: String) async throws -> String? { nil }
 }
 #endif
 

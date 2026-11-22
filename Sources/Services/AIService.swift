@@ -88,6 +88,15 @@ final class AIService: ObservableObject {
         return AISegmentationParser.lines(from: content, original: text)
     }
 
+    /// 结合句子语境解释单词，输出语言取当前译文语言
+    func explainWord(_ word: String, sentence: String) async -> String? {
+        guard isAvailable else { return nil }
+        let languageName = LanguageOption.option(for: settings.targetLanguageIdentifier).displayName
+        return await run { provider in
+            try await provider.explainWord(word, sentence: sentence, outputLanguage: languageName)
+        }
+    }
+
     // MARK: - 私有
 
     private var resolvedMode: AIProviderMode {

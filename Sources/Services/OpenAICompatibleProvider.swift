@@ -39,6 +39,20 @@ final class OpenAICompatibleProvider: TextAIProviding {
         )
     }
 
+    func explainWord(_ word: String, sentence: String, outputLanguage: String) async throws -> String? {
+        let system = """
+        你是词典助手。用户会给出一个单词和它所在的句子，要求结合语境用\(outputLanguage)解释该词。
+        只输出 1-2 句纯文本释义，不要 Markdown、编号或引号；词性明确时可用「词性. 」开头；
+        不要翻译整句，只解释该词。
+        """
+        let user = """
+        单词：\(word)
+        所在句子：\(sentence)
+        """
+        let result = try await chat(system: system, user: user, temperature: 0.3)
+        return AITextSanitizer.plainText(result ?? "")
+    }
+
     // MARK: - 私有
 
     private func chat(system: String, user: String, temperature: Double = 0.3) async throws -> String? {

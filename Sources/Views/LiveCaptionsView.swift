@@ -36,6 +36,8 @@ struct LiveCaptionsView: View {
     /// 系统共享面板正在唤起：给出即时反馈并避免重复点击排队
     @State var isSystemPanelRequesting = false
     @State var systemPanelRequestTask: Task<Void, Never>?
+    /// 单词释义弹窗
+    @State var wordLookupRequest: WordLookupRequest?
 
     var body: some View {
         GeometryReader { proxy in
@@ -89,6 +91,12 @@ struct LiveCaptionsView: View {
             .onDisappear {
                 revealTask?.cancel()
                 revealTask = nil
+            }
+            .sheet(item: $wordLookupRequest) { request in
+                WordLookupCard(request: request)
+                    .presentationDetents([.height(300), .medium])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
             }
         }
     }
