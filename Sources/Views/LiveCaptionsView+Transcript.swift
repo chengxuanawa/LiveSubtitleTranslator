@@ -144,10 +144,11 @@ extension LiveCaptionsView {
                             }
                         )
                         .id(segment.id)
+                        // 只做淡入：卡片位置由列表展开和滚动弹簧带动，
+                        // 不再从上一张卡片底部缩放“弹出来”
                         .transition(
                             .asymmetric(
-                                insertion: .scale(scale: 0.94, anchor: .bottom)
-                                    .combined(with: .opacity),
+                                insertion: .opacity,
                                 removal: .opacity
                             )
                         )
@@ -187,14 +188,28 @@ extension LiveCaptionsView {
             // 系统锚点在横屏/文字高频增长时不可靠，改为显式跟随：
             // 实时文字每吐一个字、新字幕落库时都平滑贴底
             .onChange(of: revealedText) { _, _ in
-                scrollToBottom(proxy, animated: true, duration: 0.12)
+                // 逐字增长时用柔和短弹簧，避免频繁重定向造成生硬跳动
+                scrollToBottom(
+                    proxy,
+                    animated: true,
+                    animation: .spring(response: 0.34, dampingFraction: 0.9)
+                )
             }
             .onChange(of: viewModel.segments.count) { _, _ in
-                scrollToBottom(proxy, animated: true, duration: 0.22)
+                // 新卡片插入时给一点回弹，视觉上更自然
+                scrollToBottom(
+                    proxy,
+                    animated: true,
+                    animation: .spring(response: 0.48, dampingFraction: 0.84)
+                )
             }
             .onChange(of: viewModel.state) { _, state in
                 if state == .listening {
-                    scrollToBottom(proxy, animated: true)
+                    scrollToBottom(
+                        proxy,
+                        animated: true,
+                        animation: .spring(response: 0.42, dampingFraction: 0.86)
+                    )
                 } else {
                     autoScrollUnlockTask?.cancel()
                     autoScrollLocked = false
@@ -219,7 +234,7 @@ extension LiveCaptionsView {
         _ proxy: ScrollViewProxy,
         animated: Bool,
         force: Bool = false,
-        duration: Double = 0.25
+        animation: Animation = .spring(response: 0.42, dampingFraction: 0.86)
     ) {
         guard force || !autoScrollLocked else { return }
         Task { @MainActor in
@@ -227,7 +242,7 @@ extension LiveCaptionsView {
             await Task.yield()
             guard force || !autoScrollLocked else { return }
             if animated {
-                withAnimation(.easeInOut(duration: duration)) {
+                withAnimation(animation) {
                     proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                 }
             } else {
@@ -248,7 +263,12 @@ extension LiveCaptionsView {
             guard !Task.isCancelled else { return }
             autoScrollLocked = false
             // 倒计时结束平滑滑回最新位置，而不是等下一段文字突然拉过去
-            scrollToBottom(proxy, animated: true, force: true, duration: 0.5)
+            scrollToBottom(
+                proxy,
+                animated: true,
+                force: true,
+                animation: .spring(response: 0.55, dampingFraction: 0.82)
+            )
         }
     }
 

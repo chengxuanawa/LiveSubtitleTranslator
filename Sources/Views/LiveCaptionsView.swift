@@ -101,16 +101,11 @@ struct LiveCaptionsView: View {
         }
     }
 
-    /// 字幕栏：顶栏作为滚动视图的安全区插入视图，列表会滑到顶栏与状态栏下方
+    /// 字幕栏：使用 iOS 26 的 safeAreaBar 承载顶栏，系统会把滚动边缘效果延伸到顶栏区域
     private func transcriptColumn(isLandscape: Bool, windowControlsInset: CGFloat) -> some View {
         segmentList(isLandscape: isLandscape)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                // 顶栏背后的柔和模糊：列表上滚到标题栏下方时逐渐虚化淡出
+            .safeAreaBar(edge: .top, spacing: 0) {
                 header(isLandscape: isLandscape, windowControlsInset: windowControlsInset)
-                    .background {
-                        SoftTopBlurView()
-                            .ignoresSafeArea(edges: .top)
-                    }
             }
     }
 }

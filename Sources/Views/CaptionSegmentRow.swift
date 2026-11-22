@@ -39,10 +39,10 @@ struct CaptionSegmentRow: View {
         self.onPolishRequest = onPolishRequest
         self.onReveal = onReveal
         self.onWordTap = onWordTap
-        // 默认以最终状态显示：即使入场动画因列表复用、未出现在屏幕上而没有触发，
-        // 文字也不会停在透明状态（动画开始时再临时归零）
-        _originalProgress = State(initialValue: 1)
-        _translatedProgress = State(initialValue: 1)
+        // 新卡片以不可见文字参与布局，等一帧后再模糊淡入；
+        // 历史或已播放过的卡片直接以最终状态显示
+        _originalProgress = State(initialValue: segment.hasAnimated ? 1 : 0)
+        _translatedProgress = State(initialValue: segment.hasAnimated ? 1 : 0)
     }
 
     var body: some View {
@@ -98,29 +98,6 @@ struct CaptionSegmentRow: View {
         .padding(.vertical, 10)
         .captionBubbleBackground()
         .padding(.horizontal, 12)
-        .onAppear {
-            // 只有首次出现且未播放过的气泡才播入场动画；流式追加不会重播
-            guard !segment.hasAnimated, !didTriggerReveal else { return }
-            didTriggerReveal = true
-            // 从不可见状态开始播放入场；文本默认可见，动画被跳过时也能立即落到最终态
-            originalProgress = 0
-            translatedProgress = 0
-            Task { @MainActor in
-                // 等一帧再开始，避免同帧写入被合并成无动画
-                try? await Task.sleep(nanoseconds: 16_000_000)
-                withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
-                    originalProgress = 1
-                }
-                withAnimation(.spring(response: 0.5, dampingFraction: 0.82).delay(0.13)) {
-                    translatedProgress = 1
-                }
-                // 动画播完再回写标记，避免列表在动画首帧重算造成卡顿
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                if originalProgress < 1 { originalProgress = 1 }
-                if translatedProgress < 1 { translatedProgress = 1 }
-                onReveal?()
-            }
-        }
         .onChange(of: segment.displayTranslatedText) { oldValue, newValue in
             // 译文是异步回填的：首次出现时同样播一遍模糊 + 上浮动画
             guard oldValue == nil, newValue != nil else { return }
@@ -131,6 +108,28 @@ struct CaptionSegmentRow: View {
                     translatedProgress = 1
                 }
             }
+        }
+        .task(id: segment.id) {
+            // 离屏取消后重新出现时，直接落到最终状态，避免文字停在透明
+            guard !segment.hasAnimated, !didTriggerReveal else {
+                if originalProgress < 1 { originalProgress = 1 }
+                if translatedProgress < 1 { translatedProgress = 1 }
+                return
+            }
+            didTriggerReveal = true
+            // 稍等一帧，让卡片插入动画先开始，再让文字模糊淡入
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                originalProgress = 1
+            }
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86).delay(0.12)) {
+                translatedProgress = 1
+            }
+            // 动画播完再回写标记，避免列表在动画首帧重算造成卡顿
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            if originalProgress < 1 { originalProgress = 1 }
+            if translatedProgress < 1 { translatedProgress = 1 }
+            onReveal?()
         }
         .contextMenu {
             Button {

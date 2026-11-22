@@ -95,6 +95,10 @@ final class LiveSessionViewModel: ObservableObject {
     private var externalRecognitionGeneration = 0
     /// 广播开始时 App 在后台，画中画自动启动被推迟到回到前台
     private var pendingAutoPiPStart = false
+    /// 等待回到前台的自动启动轮询（scenePhase 回调可能被系统面板吞掉）
+    private var pendingAutoPiPTask: Task<Void, Never>?
+    /// 本次录制是否已经尝试过自动开启浮窗，避免用户手动关闭后被反复拉起
+    private var didAttemptAutoStartVisual = false
     /// 识别启动时刻：用于判断启动是否卡死（例如后台模型准备迟迟不返回）
     private var externalRecognitionStartAt: Date?
     /// 最近一次识别错误文案：恢复成功后自动清除对应提示
@@ -442,6 +446,8 @@ final class LiveSessionViewModel: ObservableObject {
         if state == .listening, isExternalRecognitionRunning {
             keepAlive.start()
             startSystemAudioWatchdog()
+            // 扩展重连时也要补一次自动浮窗，避免首轮因后台被推迟后再无机会启动
+            autoStartVisualIfNeeded()
             return
         }
 
@@ -668,6 +674,10 @@ final class LiveSessionViewModel: ObservableObject {
         lastRecognitionError = nil
         recognitionRestartTask?.cancel()
         recognitionRestartTask = nil
+        didAttemptAutoStartVisual = false
+        pendingAutoPiPStart = false
+        pendingAutoPiPTask?.cancel()
+        pendingAutoPiPTask = nil
         segments = []
         failedTranslationIDs.removeAll()
         resetPartialPreview()
@@ -683,6 +693,9 @@ final class LiveSessionViewModel: ObservableObject {
         systemAudioWatchdogTask = nil
         recognitionRestartTask?.cancel()
         recognitionRestartTask = nil
+        pendingAutoPiPTask?.cancel()
+        pendingAutoPiPTask = nil
+        pendingAutoPiPStart = false
         liveActivity.end()
         keepAlive.stop()
         pipController.stop()
@@ -736,27 +749,52 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     private func autoStartVisualIfNeeded() {
-        guard settings.autoStartLiveActivity else { return }
+        guard settings.autoStartLiveActivity, !didAttemptAutoStartVisual else { return }
         switch effectiveVisualMode {
         case .liveActivity:
+            guard !isLiveActivityActive else { return }
             isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
             if isLiveActivityActive {
+                didAttemptAutoStartVisual = true
                 liveActivity.update(originalText: "正在聆听…", translatedText: nil)
             }
         case .pictureInPicture:
             guard CaptionPictureInPictureController.isSupported else { return }
+            guard !isPictureInPictureActive else { return }
             // 画中画只允许在前台启动；广播开始时 App 通常已在后台，
             // 强行启动可能被系统拒绝甚至闪退，改为回到前台后补启动
             guard UIApplication.shared.applicationState == .active else {
                 pendingAutoPiPStart = true
+                schedulePendingAutoPiPStart()
                 return
             }
             pendingAutoPiPStart = false
+            pendingAutoPiPTask?.cancel()
+            pendingAutoPiPTask = nil
+            didAttemptAutoStartVisual = true
             pipController.shape = settings.pipShape
             _ = pipController.start()
             pipController.update(original: "正在聆听…", translated: nil)
         case .auto:
             break
+        }
+    }
+
+    /// 系统面板可能吞掉 scenePhase 回调：轮询等待 App 回到前台后补启动画中画
+    private func schedulePendingAutoPiPStart() {
+        guard pendingAutoPiPTask == nil else { return }
+        pendingAutoPiPTask = Task { [weak self] in
+            for _ in 0..<60 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, !Task.isCancelled, self.pendingAutoPiPStart else { return }
+                guard self.state == .listening else { continue }
+                guard UIApplication.shared.applicationState == .active else { continue }
+                self.pendingAutoPiPStart = false
+                self.pendingAutoPiPTask = nil
+                self.autoStartVisualIfNeeded()
+                return
+            }
+            self?.pendingAutoPiPTask = nil
         }
     }
 
