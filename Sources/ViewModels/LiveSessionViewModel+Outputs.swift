@@ -12,9 +12,7 @@ extension LiveSessionViewModel {
             liveActivity.end()
             isLiveActivityActive = false
         } else {
-            isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
-            let preview = livePartialText.isEmpty ? "正在聆听…" : livePartialText
-            liveActivity.update(originalText: preview, translatedText: nil)
+            startLiveActivity()
         }
     }
 
@@ -24,14 +22,28 @@ extension LiveSessionViewModel {
             errorMessage = "当前设备不支持画中画。"
             return
         }
-        if isPictureInPictureActive {
+        if pipController.isRequested {
             pipController.stop()
             return
         }
+        startPictureInPicture()
+    }
+
+    private var initialCaptionText: String {
+        liveDisplayText.isEmpty ? livePlaceholderText : liveDisplayText
+    }
+
+    private func startLiveActivity() {
+        isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
+        if isLiveActivityActive {
+            liveActivity.update(originalText: initialCaptionText, translatedText: nil)
+        }
+    }
+
+    private func startPictureInPicture() {
         pipController.shape = settings.pipShape
+        pipController.update(original: initialCaptionText, translated: nil)
         _ = pipController.start()
-        let preview = livePartialText.isEmpty ? "正在聆听…" : livePartialText
-        pipController.update(original: preview, translated: nil)
     }
 
     /// 画中画字号设置变化后立即按当前字幕重绘
@@ -60,11 +72,9 @@ extension LiveSessionViewModel {
     func startNewSessionContext() {
         sessionID = UUID()
         sessionStart = Date()
-        sessionEnd = nil
         sourceIdentifier = settings.sourceLanguageIdentifier
         targetIdentifier = settings.targetLanguageIdentifier
         sessionLocationName = nil
-        sessionSummary = nil
         startLocationCapture()
     }
 
@@ -79,10 +89,7 @@ extension LiveSessionViewModel {
             guard !Task.isCancelled, self.sessionID == currentSessionID else { return }
             guard let placeName, !placeName.isEmpty else { return }
             self.sessionLocationName = placeName
-            // 定位结果晚于停止时，补写已保存的记录
-            if self.state == .ended {
-                self.saveCurrentSession()
-            }
+            self.transcriptStore.update(currentSessionID) { $0.locationName = placeName }
         }
     }
 
@@ -99,8 +106,11 @@ extension LiveSessionViewModel {
     /// 实验性说话人分离：设置开启后随录制启动，模型下载/初始化在后台进行
     func startSpeakerDiarizationIfNeeded() {
         guard settings.speakerDiarizationExperiment else { return }
-        let start = sessionStart
-        Task { await speakerDiarization.start(sessionStart: start) }
+        let recordingID = sessionID
+        Task { [weak self] in
+            guard let self, self.state == .listening, self.sessionID == recordingID else { return }
+            await self.speakerDiarization.start(sessionStart: self.sessionStart)
+        }
     }
 
     func autoStartVisualIfNeeded() {
@@ -108,14 +118,11 @@ extension LiveSessionViewModel {
         switch effectiveVisualMode {
         case .liveActivity:
             guard !isLiveActivityActive else { return }
-            isLiveActivityActive = liveActivity.start(languagePair: "\(sourceIdentifier) → \(targetIdentifier)")
-            if isLiveActivityActive {
-                didAttemptAutoStartVisual = true
-                liveActivity.update(originalText: "正在聆听…", translatedText: nil)
-            }
+            startLiveActivity()
+            didAttemptAutoStartVisual = isLiveActivityActive
         case .pictureInPicture:
             guard CaptionPictureInPictureController.isSupported else { return }
-            guard !isPictureInPictureActive else { return }
+            guard !pipController.isRequested else { return }
             // 画中画只允许在前台启动；广播开始时 App 通常已在后台，
             // 强行启动可能被系统拒绝甚至闪退，改为回到前台后补启动
             guard UIApplication.shared.applicationState == .active else {
@@ -127,9 +134,7 @@ extension LiveSessionViewModel {
             pendingAutoPiPTask?.cancel()
             pendingAutoPiPTask = nil
             didAttemptAutoStartVisual = true
-            pipController.shape = settings.pipShape
-            _ = pipController.start()
-            pipController.update(original: "正在聆听…", translated: nil)
+            startPictureInPicture()
         case .auto:
             break
         }
@@ -159,12 +164,7 @@ extension LiveSessionViewModel {
         let now = Date()
         guard now.timeIntervalSince(lastVisualUpdate) > 1.0 else { return }
         lastVisualUpdate = now
-        if isLiveActivityActive {
-            liveActivity.update(originalText: text, translatedText: nil)
-        }
-        if isPictureInPictureActive {
-            pipController.update(original: text, translated: nil)
-        }
+        updateVisuals(original: text, translated: nil)
     }
 
     func updateVisuals(original: String, translated: String?) {
@@ -176,46 +176,25 @@ extension LiveSessionViewModel {
         }
     }
 
-    func saveCurrentSession() {
+    func archiveCurrentSession() {
         guard !segments.isEmpty else { return }
-        let session = TranscriptSession(
+        let snapshot = TranscriptSession(
             id: sessionID,
             startedAt: sessionStart,
-            endedAt: sessionEnd ?? Date(),
-            sourceLanguageIdentifier: sourceIdentifier,
-            targetLanguageIdentifier: targetIdentifier,
-            segments: segments,
-            summary: sessionSummary,
-            locationName: sessionLocationName
-        )
-        transcriptStore.save(session)
-    }
-
-    /// 「AI 标题」模式下，录制结束后自动生成摘要，标题取摘要首行
-    func generateAutoTitleIfNeeded() {
-        guard settings.recordTitleStyle == .aiTitle,
-              sessionSummary == nil,
-              !segments.isEmpty,
-              aiService.isAvailable else { return }
-
-        let targetSessionID = sessionID
-        let snapshot = TranscriptSession(
-            id: targetSessionID,
-            startedAt: sessionStart,
-            endedAt: sessionEnd ?? Date(),
+            endedAt: Date(),
             sourceLanguageIdentifier: sourceIdentifier,
             targetLanguageIdentifier: targetIdentifier,
             segments: segments,
             locationName: sessionLocationName
         )
+        transcriptStore.save(snapshot)
+        guard settings.recordTitleStyle == .aiTitle, aiService.isAvailable else { return }
 
         Task { [weak self] in
             guard let self,
                   let summary = await self.aiService.summarize(session: snapshot) else { return }
-            guard self.sessionID == targetSessionID else { return }
-            self.sessionSummary = summary
-            if self.state == .ended {
-                self.saveCurrentSession()
+            self.transcriptStore.update(snapshot.id) { record in
+                if record.summary == nil { record.summary = summary }
             }
         }
     }

@@ -70,7 +70,6 @@ struct LiveCaptionsView: View {
             .frame(maxWidth: isLandscape ? .infinity : 900, maxHeight: .infinity)
             .background(Color(.systemBackground).ignoresSafeArea())
             .onAppear {
-                viewModel.prepareSystemAudioServer()
                 // 重新进入页面直接对齐当前文本，避免重放逐字动画
                 revealedText = viewModel.liveDisplayText
                 tailSettled = true

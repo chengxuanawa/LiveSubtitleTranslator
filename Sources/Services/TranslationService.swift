@@ -1,6 +1,11 @@
 import Foundation
 import Translation
 
+struct TranslationLanguagePair: Equatable {
+    let source: Locale.Language
+    let target: Locale.Language
+}
+
 /// 文本翻译能力抽象，便于二次开发时替换为其他翻译引擎（如在线 API）。
 @MainActor
 protocol TextTranslating: AnyObject {
@@ -12,7 +17,7 @@ protocol TextTranslating: AnyObject {
     /// 会话结束（translationTask 被取消）时释放；令牌不匹配说明已换成新会话
     func detach(token: Int)
     /// 翻译单条文本；失败时返回 nil（界面回退为仅显示原文）
-    func translate(_ text: String) async -> String?
+    func translate(_ text: String, for pair: TranslationLanguagePair) async -> String?
 }
 
 /// 基于系统 Translation 框架的实现。
@@ -21,27 +26,23 @@ protocol TextTranslating: AnyObject {
 @MainActor
 final class TranslationService: TextTranslating {
 
-    private struct LanguagePair: Equatable {
-        let source: Locale.Language
-        let target: Locale.Language
-    }
-
     private struct PendingItem {
         let id: UUID
         let text: String
+        let pair: TranslationLanguagePair
         let continuation: CheckedContinuation<String?, Never>
     }
 
     private var session: TranslationSession?
     private var sessionToken = 0
-    private var requestedPair: LanguagePair?
-    private var attachedPair: LanguagePair?
+    private var requestedPair: TranslationLanguagePair?
+    private var attachedPair: TranslationLanguagePair?
     private var pendingItems: [PendingItem] = []
     private var waitTimeouts: [UUID: Task<Void, Never>] = [:]
     private var isProcessing = false
 
     func setLanguagePair(source: Locale.Language, target: Locale.Language) async {
-        let pair = LanguagePair(source: source, target: target)
+        let pair = TranslationLanguagePair(source: source, target: target)
         guard requestedPair != pair else { return }
         requestedPair = pair
         // 相同语言对继续复用现有会话；只有真正切换语言时才等待新会话。
@@ -59,7 +60,7 @@ final class TranslationService: TextTranslating {
     func attach(session: TranslationSession) -> Int {
         sessionToken += 1
         let token = sessionToken
-        let pair = LanguagePair(
+        let pair = TranslationLanguagePair(
             source: session.sourceLanguage ?? requestedPair?.source ?? Locale.Language(identifier: "en"),
             target: session.targetLanguage ?? requestedPair?.target ?? Locale.Language(identifier: "en")
         )
@@ -82,12 +83,12 @@ final class TranslationService: TextTranslating {
         }
     }
 
-    func translate(_ text: String) async -> String? {
+    func translate(_ text: String, for pair: TranslationLanguagePair) async -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return await withCheckedContinuation { continuation in
             let id = UUID()
-            pendingItems.append(PendingItem(id: id, text: trimmed, continuation: continuation))
+            pendingItems.append(PendingItem(id: id, text: trimmed, pair: pair, continuation: continuation))
             scheduleWaitTimeout(for: id)
             processNextIfIdle()
         }
@@ -119,33 +120,29 @@ final class TranslationService: TextTranslating {
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.isProcessing = false }
-            while !self.pendingItems.isEmpty {
+            while let session = self.session, !self.pendingItems.isEmpty {
                 let item = self.pendingItems.removeFirst()
                 self.waitTimeouts.removeValue(forKey: item.id)?.cancel()
-                guard let session = self.session else {
-                    // 会话在排队期间失效：放回队首，等待 translationTask 重新注入。
-                    self.pendingItems.insert(item, at: 0)
-                    self.scheduleWaitTimeout(for: item.id)
-                    break
-                }
-                do {
-                    let translated = try await self.performTranslation(item.text, using: session)
-                    item.continuation.resume(returning: translated)
-                } catch {
+                guard self.attachedPair == item.pair else {
                     item.continuation.resume(returning: nil)
+                    continue
                 }
+                let token = self.sessionToken
+                let translated = await self.performTranslation(item.text, using: session, token: token)
+                item.continuation.resume(returning: translated)
             }
         }
     }
 
-    /// 系统翻译偶发 internalError，短暂等待后自动再试一次；用户取消或语言包缺失不重试。
-    private func performTranslation(_ text: String, using session: TranslationSession) async throws -> String {
+    /// 只有旧会话仍有效时，才重试系统翻译的临时错误。
+    private func performTranslation(_ text: String, using session: TranslationSession, token: Int) async -> String? {
         do {
             return try await session.translate(text).targetText
         } catch {
-            guard isRetryable(error) else { throw error }
-            try await Task.sleep(nanoseconds: 300_000_000)
-            return try await session.translate(text).targetText
+            guard isRetryable(error) else { return nil }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, token == sessionToken, self.session != nil else { return nil }
+            return try? await session.translate(text).targetText
         }
     }
 

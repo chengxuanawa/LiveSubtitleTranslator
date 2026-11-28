@@ -16,8 +16,17 @@ struct CaptionBubbleBackground: View {
 }
 
 extension View {
-    /// 应用统一的字幕气泡背景与描边
-    func captionBubbleBackground(speakerLabel: String?) -> some View {
-        background(CaptionBubbleBackground(speakerLabel: speakerLabel))
+    /// 气泡保持满宽，标签沿上边线分边摆放，不占正文布局空间。
+    func captionBubbleStyle(speakerLabel: String?) -> some View {
+        let badgeAlignment: Alignment = SpeakerPalette.isRightAligned(label: speakerLabel) ? .topTrailing : .topLeading
+        return background(CaptionBubbleBackground(speakerLabel: speakerLabel))
+            .overlay(alignment: badgeAlignment) {
+                if let speakerLabel, SpeakerPalette.index(from: speakerLabel) != nil {
+                    SpeakerEdgeBadge(label: speakerLabel)
+                        .padding(.horizontal, 13)
+                        .alignmentGuide(.top) { $0[VerticalAlignment.center] }
+                        .allowsHitTesting(false)
+                }
+            }
     }
 }

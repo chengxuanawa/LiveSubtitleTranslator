@@ -7,12 +7,9 @@ extension LiveCaptionsView {
 
     /// 实时字幕沿用完整宽度，说话人标签在气泡内分边显示
     private var liveBubble: some View {
-        let speakerLabel = settings.speakerDiarizationExperiment ? speakerDiarization.currentSpeakerLabel : nil
+        let hasCaption = !revealedText.isEmpty || !viewModel.liveDisplayText.isEmpty
+        let speakerLabel = hasCaption && settings.speakerDiarizationExperiment ? speakerDiarization.currentSpeakerLabel : nil
         return VStack(alignment: .leading, spacing: 6) {
-            if let speakerLabel {
-                SpeakerChip(label: speakerLabel, icon: "person.wave.2.fill")
-            }
-
             if !revealedText.isEmpty {
                 liveRevealText
                     .font(.body)
@@ -25,7 +22,7 @@ extension LiveCaptionsView {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if settings.realtimeTranslationEnabled,
+            if hasCaption, settings.realtimeTranslationEnabled,
                !viewModel.isRecognitionPaused,
                viewModel.state == .listening {
                 HStack(alignment: .top, spacing: 8) {
@@ -42,7 +39,7 @@ extension LiveCaptionsView {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .captionBubbleBackground(speakerLabel: speakerLabel)
+        .captionBubbleStyle(speakerLabel: speakerLabel)
         .padding(.horizontal, 12)
     }
 
@@ -242,11 +239,11 @@ extension LiveCaptionsView {
         }
     }
 
-    /// 开始或重置回到实时的倒计时；时间为 0 时保持固定，不自动返回
     private func polish(_ segment: CaptionSegment) {
+        let recordingID = viewModel.sessionID
         Task {
             guard let polished = await aiService.polish(segment: segment) else { return }
-            viewModel.applyPolishedText(polished, to: segment.id)
+            viewModel.applyPolishedText(polished, to: segment.id, in: recordingID)
         }
     }
 }

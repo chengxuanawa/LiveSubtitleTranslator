@@ -40,15 +40,24 @@ final class LiveSessionViewModel: ObservableObject {
         if isRecognitionPaused {
             return "已暂停识别，录屏仍在继续"
         }
-        if audioSourceMode == .systemAudio, isWaitingForBroadcast {
-            return "等待系统共享音频…"
+        if audioSourceMode == .systemAudio {
+            return systemAudioInputStage.placeholder
         }
         return "正在聆听…"
     }
     /// 灵动岛字幕是否已开启（由用户手动触发或按设置自动开启）
     @Published var isLiveActivityActive = false
-    /// 系统音频模式下是否正在等待广播连接
-    @Published var isWaitingForBroadcast = false
+    /// 系统音频的占位提示只在输入状态变化时刷新。
+    @Published private(set) var systemAudioInputStage = SystemAudioInputStage.waitingForBroadcast
+
+    var isWaitingForBroadcast: Bool {
+        systemAudioInputStage == .waitingForBroadcast && !systemAudio.dismissedByUser
+    }
+
+    func updateSystemAudioInputStage(_ stage: SystemAudioInputStage) {
+        guard stage != systemAudioInputStage else { return }
+        systemAudioInputStage = stage
+    }
     /// 系统音频识别是否已暂停（录屏广播保持不断开，只是不再喂入识别）
     @Published var isRecognitionPaused = false
     /// 画中画字幕是否已激活
@@ -74,7 +83,6 @@ final class LiveSessionViewModel: ObservableObject {
 
     var sessionID = UUID()
     var sessionStart = Date()
-    var sessionEnd: Date?
     var sourceIdentifier = ""
     var targetIdentifier = ""
     var lastVisualUpdate = Date.distantPast
@@ -84,8 +92,6 @@ final class LiveSessionViewModel: ObservableObject {
     var partialThrottleTask: Task<Void, Never>?
     /// 本次录制的地点名（定位完成后写入，用于「位置」标题）
     var sessionLocationName: String?
-    /// 本次录制自动生成的 AI 摘要（用于「AI 标题」）
-    var sessionSummary: String?
     var locationTask: Task<Void, Never>?
 
     /// 广播开始时 App 在后台，画中画自动启动被推迟到回到前台
@@ -108,8 +114,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     var pendingChunks: [PendingSpeechChunk] = []
     var segmentationTask: Task<Void, Never>?
-    var segmentationRequestID = 0
-    var segmentationGeneration = UUID()
+    var translationIDsInFlight: Set<UUID> = []
     var isSegmentingPending = false
     /// 已落库的最近几段字幕，作为 AI 分段的上下文
     var recentSegmentContext: [String] = []
@@ -151,9 +156,9 @@ final class LiveSessionViewModel: ObservableObject {
             }
         }
         wireCallbacks()
-        // App 启动即开始监听系统音频端口：即使用户在其他页签或从控制中心
-        // 直接开始共享，广播扩展也能连上，不会因为页面未出现而检测不到
-        _ = systemAudioServer.start()
+        if audioSourceMode == .systemAudio {
+            prepareSystemAudioServer()
+        }
     }
 
     deinit {
@@ -165,7 +170,8 @@ final class LiveSessionViewModel: ObservableObject {
 
     private func wireCallbacks() {
         speechRecognizer.onPartialUpdate = { [weak self] text in
-            self?.publishPartialText(text)
+            guard let self, !self.isRecognitionPaused else { return }
+            self.publishPartialText(text)
         }
         speechRecognizer.onMicrophoneBuffer = { [weak self] buffer in
             Task { @MainActor in
@@ -216,29 +222,23 @@ final class LiveSessionViewModel: ObservableObject {
         settings.objectWillChange.send()
         if mode == .systemAudio {
             prepareSystemAudioServer()
+        } else {
+            systemAudioServer.stop()
         }
     }
 
-    func toggle() {
+    func toggleMicrophone() {
+        guard audioSourceMode == .microphone else { return }
         if state == .listening {
-            if audioSourceMode == .systemAudio {
-                endSystemAudioFromButton()
-            } else {
-                stop()
-            }
+            stop()
             return
         }
-        switch audioSourceMode {
-        case .microphone:
-            guard microphoneStartTask == nil else { return }
-            microphoneStartTask = Task { [weak self] in
-                guard let self, !Task.isCancelled else { return }
-                await self.startMicrophone()
-                guard !Task.isCancelled else { return }
-                self.microphoneStartTask = nil
-            }
-        case .systemAudio:
-            prepareSystemAudioServer()
+        guard microphoneStartTask == nil else { return }
+        microphoneStartTask = Task { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            await self.startMicrophone()
+            guard !Task.isCancelled else { return }
+            self.microphoneStartTask = nil
         }
     }
 
@@ -267,6 +267,7 @@ final class LiveSessionViewModel: ObservableObject {
     }
 
     func stop() {
+        guard state == .listening || microphoneStartTask != nil else { return }
         microphoneStartTask?.cancel()
         microphoneStartTask = nil
         isRecognitionPaused = false
@@ -276,10 +277,8 @@ final class LiveSessionViewModel: ObservableObject {
         flushPendingBuffer()
         resetPartialPreview()
         teardownOutputs()
-        sessionEnd = Date()
         state = .ended
-        saveCurrentSession()
-        generateAutoTitleIfNeeded()
+        archiveCurrentSession()
     }
 
     func dismissError() {
@@ -304,8 +303,11 @@ final class LiveSessionViewModel: ObservableObject {
             return
         }
         errorMessage = message
-        flushPendingBuffer()
-        state = .ended
-        teardownOutputs()
+        if state == .listening {
+            stop()
+        } else {
+            state = .ended
+            teardownOutputs()
+        }
     }
 }

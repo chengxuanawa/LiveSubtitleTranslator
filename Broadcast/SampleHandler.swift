@@ -1,5 +1,6 @@
 import AVFoundation
 import Network
+import OSLog
 import ReplayKit
 
 /// 广播上传扩展：捕获系统音频（其他 App 播放的声音）并转发给主 App。
@@ -13,9 +14,14 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var isBroadcasting = false
     private var reconnectScheduled = false
     private var heartbeatScheduled = false
-    private var converter: AVAudioConverter?
-    private var converterInputFormat: AVAudioFormat?
-    private var targetFormat: AVAudioFormat?
+    private var appAudioConverter = BroadcastAudioConverter()
+    private var microphoneConverter = BroadcastAudioConverter()
+    private let pendingAudio = DispatchSemaphore(value: 48)
+    private let logger = Logger(subsystem: "com.example.sublingo.broadcast", category: "Audio")
+    /// ReplayKit 串行调用采样与广播生命周期回调。
+    private var hasLoggedCopyFailure = false
+    /// 由网络队列读写，与转换器一起重置。
+    private var hasLoggedConversionFailure = false
     /// 断线期间暂存的音频包：重连成功后立即补发，避免每次重连丢开头音频
     private var pendingPackets: [Data] = []
     /// 最多暂存的音频包数量（约 5 秒）
@@ -24,16 +30,26 @@ final class SampleHandler: RPBroadcastSampleHandler {
     // MARK: - 广播生命周期
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
+        hasLoggedCopyFailure = false
         queue.async { [weak self] in
             guard let self else { return }
             self.isBroadcasting = true
+            self.resetConverters()
             self.connect()
         }
     }
 
     override func broadcastPaused() {}
 
-    override func broadcastResumed() {}
+    override func broadcastResumed() {
+        queue.async { [weak self] in
+            guard let self, self.isBroadcasting else { return }
+            self.resetConverters()
+            if self.connection == nil {
+                self.connect()
+            }
+        }
+    }
 
     override func broadcastFinished() {
         queue.async { [weak self] in
@@ -60,16 +76,45 @@ final class SampleHandler: RPBroadcastSampleHandler {
     // MARK: - 采样处理
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
-        guard sampleBufferType == .audioApp || sampleBufferType == .audioMic else { return }
-        // ReplayKit 可能在不同线程回调音频：转换与发包统一放到串行队列，
-        // 否则共用 AVAudioConverter 会因并发丢包甚至崩溃（表现为偶发抓不到声音）
-        queue.async { [weak self] in
-            guard let self, self.isBroadcasting else { return }
-            autoreleasepool {
-                guard let packet = self.makePacket(from: sampleBuffer) else { return }
-                self.send(packet)
+        let isAppAudio = sampleBufferType == .audioApp
+        guard isAppAudio || sampleBufferType == .audioMic else { return }
+        guard pendingAudio.wait(timeout: .now()) == .success else { return }
+
+        // 回调返回后 ReplayKit 可重用采样。后台只处理扩展自己拥有的 PCM 副本。
+        guard let pcm = Self.copyPCMBuffer(from: sampleBuffer) else {
+            pendingAudio.signal()
+            if !hasLoggedCopyFailure {
+                hasLoggedCopyFailure = true
+                logger.error("无法复制 ReplayKit 音频采样")
             }
+            return
         }
+
+        queue.async { [weak self, pendingAudio = self.pendingAudio] in
+            defer { pendingAudio.signal() }
+            self?.processOwnedPCM(pcm, isAppAudio: isAppAudio)
+        }
+    }
+
+    private func processOwnedPCM(_ pcm: AVAudioPCMBuffer, isAppAudio: Bool) {
+        guard isBroadcasting else { return }
+        autoreleasepool {
+            let converted = isAppAudio ? appAudioConverter.convert(pcm) : microphoneConverter.convert(pcm)
+            guard let converted, let packet = Self.makePacket(from: converted) else {
+                if !hasLoggedConversionFailure {
+                    hasLoggedConversionFailure = true
+                    logger.error("无法转换 ReplayKit 音频采样")
+                }
+                return
+            }
+            send(packet)
+        }
+    }
+
+    private func resetConverters() {
+        appAudioConverter = BroadcastAudioConverter()
+        microphoneConverter = BroadcastAudioConverter()
+        hasLoggedConversionFailure = false
     }
 
     // MARK: - 网络
@@ -90,6 +135,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             switch state {
             case .ready:
                 self.isConnected = true
+                self.send(Self.heartbeatPacket, cacheWhenDisconnected: false)
                 self.flushPendingPackets()
                 self.startHeartbeat()
             case .failed, .cancelled, .waiting:
@@ -181,13 +227,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     // MARK: - 音频转换与打包
 
-    private func makePacket(from sampleBuffer: CMSampleBuffer) -> Data? {
-        guard let pcm = makePCMBuffer(from: sampleBuffer) else { return nil }
-        guard let converted = convert(pcm), let samples = converted.int16ChannelData else { return nil }
-
-        let frameLength = Int(converted.frameLength)
-        guard frameLength > 0 else { return nil }
-        let byteCount = frameLength * MemoryLayout<Int16>.size
+    private static func makePacket(from pcm: AVAudioPCMBuffer) -> Data? {
+        guard pcm.frameLength > 0, let samples = pcm.int16ChannelData else { return nil }
+        let byteCount = Int(pcm.frameLength) * MemoryLayout<Int16>.size
         var packet = Data(capacity: byteCount + 4)
         var length = UInt32(byteCount).bigEndian
         packet.append(Data(bytes: &length, count: 4))
@@ -195,82 +237,53 @@ final class SampleHandler: RPBroadcastSampleHandler {
         return packet
     }
 
-    private func makePCMBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let asbdPointer = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else { return nil }
-        guard let format = AVAudioFormat(streamDescription: asbdPointer) else { return nil }
+    private static func copyPCMBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let stream = CMAudioFormatDescriptionGetStreamBasicDescription(description),
+              stream.pointee.mFormatID == kAudioFormatLinearPCM,
+              let format = AVAudioFormat(streamDescription: stream),
+              format.sampleRate > 0, format.channelCount > 0 else { return nil }
 
-        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard frameCount > 0, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return nil }
-        pcm.frameLength = frameCount
-
-        // 动态分配 AudioBufferList（多声道非交错时可能包含多个 AudioBuffer）
-        var bufferListSize = 0
-        CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: &bufferListSize,
-            bufferListOut: nil,
-            bufferListSize: 0,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: 0,
-            blockBufferOut: nil
-        )
-        guard bufferListSize > 0 else { return nil }
-
-        let rawPointer = UnsafeMutableRawPointer.allocate(
-            byteCount: bufferListSize,
-            alignment: MemoryLayout<AudioBufferList>.alignment
-        )
-        defer { rawPointer.deallocate() }
-        let listPointer = rawPointer.assumingMemoryBound(to: AudioBufferList.self)
-
-        var blockBuffer: CMBlockBuffer?
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: listPointer,
-            bufferListSize: bufferListSize,
-            blockBufferAllocator: kCFAllocatorDefault,
-            blockBufferMemoryAllocator: kCFAllocatorDefault,
-            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
-            blockBufferOut: &blockBuffer
-        )
-        guard status == noErr else { return nil }
-
-        let sourceList = UnsafeMutableAudioBufferListPointer(listPointer)
-        let targetList = UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList)
-        let channelCount = min(sourceList.count, targetList.count)
-        for index in 0..<channelCount {
-            guard let sourceData = sourceList[index].mData,
-                  let targetData = targetList[index].mData else { continue }
-            let bytes = Int(min(sourceList[index].mDataByteSize, targetList[index].mDataByteSize))
-            memcpy(targetData, sourceData, bytes)
-            targetList[index].mDataByteSize = UInt32(bytes)
+        let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard sampleCount > 0, let frameCount = Int32(exactly: sampleCount),
+              let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            return nil
         }
-        return pcm
+        pcm.frameLength = AVAudioFrameCount(frameCount)
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: frameCount,
+            into: pcm.mutableAudioBufferList
+        )
+        return status == noErr ? pcm : nil
     }
+}
 
-    private func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        if targetFormat == nil {
-            targetFormat = AVAudioFormat(
-                commonFormat: .pcmFormatInt16,
-                sampleRate: AudioStreamProtocol.sampleRate,
-                channels: 1,
-                interleaved: true
-            )
-        }
-        guard let targetFormat else { return nil }
+/// App 音轨和麦克风音轨可能交替到达，分别保留重采样状态。
+private struct BroadcastAudioConverter {
+    private static let targetFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: AudioStreamProtocol.sampleRate,
+        channels: 1,
+        interleaved: true
+    )
 
-        if converter == nil || converterInputFormat != input.format {
-            converter = AVAudioConverter(from: input.format, to: targetFormat)
-            converterInputFormat = input.format
+    private var converter: AVAudioConverter?
+    private var sourceFormat: AVAudioFormat?
+
+    mutating func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let format = Self.targetFormat else { return nil }
+        if input.format == format { return input }
+        if converter == nil || sourceFormat != input.format {
+            converter = AVAudioConverter(from: input.format, to: format)
+            sourceFormat = input.format
         }
         guard let converter else { return nil }
 
-        let ratio = targetFormat.sampleRate / input.format.sampleRate
+        let ratio = format.sampleRate / input.format.sampleRate
         let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + 32
-        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return nil }
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
 
         var provided = false
         var conversionError: NSError?

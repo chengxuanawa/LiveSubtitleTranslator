@@ -19,12 +19,11 @@ extension LiveSessionViewModel {
     }
 
     /// AI 润色结果回填到对应字幕片段
-    func applyPolishedText(_ text: String, to segmentID: UUID) {
-        guard let index = segments.firstIndex(where: { $0.id == segmentID }) else { return }
-        segments[index].polishedText = text
-        if state == .ended {
-            saveCurrentSession()
+    func applyPolishedText(_ text: String, to segmentID: UUID, in recordingID: UUID) {
+        if sessionID == recordingID, let index = segments.firstIndex(where: { $0.id == segmentID }) {
+            segments[index].polishedText = text
         }
+        transcriptStore.updateSegment(segmentID, in: recordingID) { $0.polishedText = text }
     }
 
     /// 接入 SwiftUI translationTask 提供的系统翻译会话
@@ -32,10 +31,10 @@ extension LiveSessionViewModel {
     /// 提前返回后再用旧 session 翻译属于未定义行为，可能出现闪退。
     func keepTranslationSessionAlive(_ session: TranslationSession) async {
         let token = translationService.attach(session: session)
+        defer { translationService.detach(token: token) }
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(for: .seconds(1))
         }
-        translationService.detach(token: token)
     }
 
     /// 以约 12Hz 的频率发布部分识别结果，避免高频刷新造成文字抖动；尾部补发保证文本不丢失
@@ -74,8 +73,8 @@ extension LiveSessionViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        // AI 不可用时保持原来的即时落库
-        guard aiService.isAvailable else {
+        // 暂停时落下已识别的尾句，实时气泡继续保持暂停提示。
+        guard !isRecognitionPaused, aiService.isAvailable else {
             appendCommittedSegment(trimmed, startTime: startTime)
             return
         }
@@ -99,123 +98,74 @@ extension LiveSessionViewModel {
         if recentSegmentContext.count > 3 {
             recentSegmentContext.removeFirst(recentSegmentContext.count - 3)
         }
-        let segmentID = segment.id
         updateVisuals(original: trimmed, translated: nil)
-
-        guard settings.realtimeTranslationEnabled else { return }
-
-        Task { [weak self] in
-            guard let self else { return }
-            let translated = await self.translationService.translate(trimmed)
-            guard let translated, !translated.isEmpty else {
-                self.failedTranslationIDs.insert(segmentID)
-                return
-            }
-            guard let index = self.segments.firstIndex(where: { $0.id == segmentID }) else { return }
-            self.segments[index].translatedText = translated
-            self.failedTranslationIDs.remove(segmentID)
-            self.updateVisuals(original: trimmed, translated: translated)
-            // 会话结束后仍有译文回填时，刷新已保存的记录
-            if self.state == .ended {
-                self.saveCurrentSession()
-            }
-        }
+        requestTranslation(for: segment)
     }
 
     // MARK: - AI 分段
 
-    /// 停顿约 0.3 秒后交给 AI 合并/切分；缓冲过长时立即整理
+    /// 还在等断句时合并新文本，送出请求后只在取消或收尾时作废。
     private func schedulePendingSegmentation() {
-        guard !pendingChunks.isEmpty else { return }
+        guard !pendingChunks.isEmpty, !isSegmentingPending else { return }
         guard aiService.isAvailable else {
             flushPendingBuffer()
             return
         }
 
-        segmentationRequestID += 1
-        let requestID = segmentationRequestID
+        segmentationTask?.cancel()
         let force = pendingText.count >= 120 || pendingChunks.count >= 4
-        // 已经以句末标点结束时立即整理；否则多等一会儿，
-        // 让后续碎片并进来，避免每句话都单独成段
         let endsWithSentenceMark = pendingText.last.map { "。！？!?…".contains($0) } ?? false
-        let delay: UInt64 = endsWithSentenceMark ? 300_000_000 : 800_000_000
+        let delay: Duration = endsWithSentenceMark ? .milliseconds(300) : .milliseconds(800)
         segmentationTask = Task { [weak self] in
-            if !force {
-                try? await Task.sleep(nanoseconds: delay)
-            }
-            guard let self,
-                  !Task.isCancelled,
-                  self.segmentationRequestID == requestID else { return }
+            if !force { try? await Task.sleep(for: delay) }
+            guard let self, !Task.isCancelled else { return }
             await self.segmentAndCommitPending()
         }
     }
 
     private func segmentAndCommitPending() async {
-        guard !isSegmentingPending, !pendingChunks.isEmpty else { return }
         isSegmentingPending = true
-        defer { isSegmentingPending = false }
-
-        let generation = segmentationGeneration
         let chunks = pendingChunks
         let original = chunks.map(\.text).joined()
-        guard !original.isEmpty else {
-            pendingChunks.removeAll()
-            pendingText = ""
-            return
-        }
+        let context = recentSegmentContext.isEmpty ? nil : recentSegmentContext.joined(separator: "\n")
+        let sentences = await aiService.segmentSentences(original, context: context)
+        guard !Task.isCancelled else { return }
+        segmentationTask = nil
+        isSegmentingPending = false
 
-        let sentences = await aiService.segmentSentences(
-            original,
-            context: recentSegmentContext.isEmpty ? nil : recentSegmentContext.joined(separator: "\n")
-        )
-        guard generation == segmentationGeneration else {
-            if !pendingChunks.isEmpty {
-                schedulePendingSegmentation()
-            }
-            return
-        }
-
-        // 只移除本次已处理的片段；AI 处理期间新到的片段继续保留
-        let processedCount = min(chunks.count, pendingChunks.count)
-        pendingChunks.removeFirst(processedCount)
+        pendingChunks.removeFirst(chunks.count)
         pendingText = pendingChunks.map(\.text).joined()
-
-        let finalSentences = sentences ?? Self.fallbackSegments(for: original)
-        let times = startTimes(for: finalSentences, chunks: chunks)
-        for (index, sentence) in finalSentences.enumerated() {
-            let time = times.indices.contains(index) ? times[index] : (chunks.first?.startTime ?? 0)
-            appendCommittedSegment(sentence, startTime: time)
-        }
-
-        if !pendingChunks.isEmpty {
-            schedulePendingSegmentation()
-        }
+        commitSentences(sentences ?? Self.fallbackSegments(for: original), from: chunks)
+        schedulePendingSegmentation()
     }
 
-    /// 结束或清空时直接按标点兜底落库，避免 AI 未返回导致字幕丢失
+    /// 停止或暂停时直接按标点落库，避免等待 AI 导致字幕丢失。
     func flushPendingBuffer() {
-        segmentationRequestID += 1
-        segmentationGeneration = UUID()
-        let chunks = pendingChunks
-        pendingChunks.removeAll()
-        pendingText = ""
+        let chunks = takePendingChunks()
         guard !chunks.isEmpty else { return }
-
-        let original = chunks.map(\.text).joined()
-        let sentences = Self.fallbackSegments(for: original)
-        let times = startTimes(for: sentences, chunks: chunks)
-        for (index, sentence) in sentences.enumerated() {
-            let time = times.indices.contains(index) ? times[index] : (chunks.first?.startTime ?? 0)
-            appendCommittedSegment(sentence, startTime: time)
-        }
+        commitSentences(Self.fallbackSegments(for: chunks.map(\.text).joined()), from: chunks)
     }
 
     func resetPendingBuffer() {
-        segmentationRequestID += 1
-        segmentationGeneration = UUID()
+        _ = takePendingChunks()
+        recentSegmentContext.removeAll()
+    }
+
+    private func takePendingChunks() -> [PendingSpeechChunk] {
+        segmentationTask?.cancel()
+        segmentationTask = nil
+        isSegmentingPending = false
+        let chunks = pendingChunks
         pendingChunks.removeAll()
         pendingText = ""
-        recentSegmentContext.removeAll()
+        return chunks
+    }
+
+    private func commitSentences(_ sentences: [String], from chunks: [PendingSpeechChunk]) {
+        let times = startTimes(for: sentences, chunks: chunks)
+        for (index, sentence) in sentences.enumerated() {
+            appendCommittedSegment(sentence, startTime: times[index])
+        }
     }
 
     /// AI 不可用或返回无效内容时，用本地标点做兜底切分
@@ -265,29 +215,43 @@ extension LiveSessionViewModel {
         return chunks.last?.startTime ?? 0
     }
 
-    /// 手动重试某一条未生成译文的字幕
     func retryTranslation(for segment: CaptionSegment) {
-        guard settings.realtimeTranslationEnabled else { return }
+        guard segments.contains(where: { $0.id == segment.id }) else { return }
+        requestTranslation(for: segment)
+    }
+
+    /// 自动翻译和手动重试走同一路径，只把结果回填到原有会话和字幕。
+    private func requestTranslation(for segment: CaptionSegment) {
         let segmentID = segment.id
+        guard settings.realtimeTranslationEnabled, translationIDsInFlight.insert(segmentID).inserted else { return }
         failedTranslationIDs.remove(segmentID)
 
+        let recordingID = sessionID
+        let pair = TranslationLanguagePair(
+            source: Locale.Language(identifier: sourceIdentifier),
+            target: Locale.Language(identifier: targetIdentifier)
+        )
         Task { [weak self] in
             guard let self else { return }
-            let translated = await self.translationService.translate(segment.originalText)
-            guard let translated, !translated.isEmpty,
-                  let index = self.segments.firstIndex(where: { $0.id == segmentID }) else {
-                self.failedTranslationIDs.insert(segmentID)
-                return
-            }
-            self.segments[index].translatedText = translated
-            self.failedTranslationIDs.remove(segmentID)
-            // 只有最新一条需要同步到灵动岛 / 画中画
-            if self.segments.last?.id == segmentID {
-                self.updateVisuals(original: segment.originalText, translated: translated)
-            }
-            if self.state == .ended {
-                self.saveCurrentSession()
+            defer { self.translationIDsInFlight.remove(segmentID) }
+            let result = await self.translationService.translate(segment.originalText, for: pair)
+            self.applyTranslation(result, to: segment, in: recordingID)
+        }
+    }
+
+    private func applyTranslation(_ text: String?, to segment: CaptionSegment, in recordingID: UUID) {
+        let index = sessionID == recordingID ? segments.firstIndex(where: { $0.id == segment.id }) : nil
+        guard let text, !text.isEmpty else {
+            if index != nil { failedTranslationIDs.insert(segment.id) }
+            return
+        }
+        if let index {
+            segments[index].translatedText = text
+            failedTranslationIDs.remove(segment.id)
+            if index == segments.count - 1, liveDisplayText.isEmpty {
+                updateVisuals(original: segment.originalText, translated: text)
             }
         }
+        transcriptStore.updateSegment(segment.id, in: recordingID) { $0.translatedText = text }
     }
 }

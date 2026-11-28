@@ -54,6 +54,11 @@ extension LiveCaptionsView {
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.state)
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.audioSourceMode)
         }
+        .background {
+            if viewModel.audioSourceMode == .systemAudio {
+                broadcastPickerHost
+            }
+        }
     }
 
     /// 音频来源切换：麦克风模式下显示红色圆点，系统共享音频模式下显示麦克风图标
@@ -116,8 +121,6 @@ extension LiveCaptionsView {
     /// 系统共享音频主按钮：自定义蓝色玻璃外观，点击后弹出系统广播选择器
     private var systemAudioButton: some View {
         Button {
-            // 广播开始后 App 可能立刻退到后台，提前启动静音保活，避免本地监听被挂起
-            viewModel.prepareSystemAudioBroadcast()
             presentSystemBroadcastPanel()
         } label: {
             Group {
@@ -134,13 +137,12 @@ extension LiveCaptionsView {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(Color.accentColor).interactive(), in: Circle())
-        .background(broadcastPickerHost)
         .accessibilityLabel("开始系统广播")
     }
 
     private var recordButton: some View {
         Button {
-            viewModel.toggle()
+            viewModel.toggleMicrophone()
         } label: {
             Image(systemName: viewModel.state == .listening ? "stop.fill" : "mic.fill")
                 .font(.system(size: 24, weight: .semibold))
@@ -165,21 +167,13 @@ extension LiveCaptionsView {
             // 先立即结束识别并保存，提示用户到控制中心结束屏幕共享
             viewModel.endSystemAudioFromButton()
         } label: {
-            Group {
-                if isSystemPanelRequesting {
-                    ProgressView()
-                        .tint(.white)
-                } else {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 22, weight: .semibold))
-                }
-            }
-            .foregroundStyle(.white)
-            .frame(width: 56, height: 56)
+            Image(systemName: "stop.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(Color.red).interactive(), in: Circle())
-        .background(broadcastPickerHost)
         .accessibilityLabel("结束共享并停止识别")
     }
 
@@ -187,6 +181,7 @@ extension LiveCaptionsView {
     /// 避免系统面板响应慢时多次点击排队、之后一起弹出
     private func presentSystemBroadcastPanel() {
         guard !isSystemPanelRequesting else { return }
+        viewModel.prepareSystemAudioBroadcast()
         isSystemPanelRequesting = true
         systemPanelRequestTask?.cancel()
         systemPanelRequestTask = Task { @MainActor in
@@ -208,7 +203,6 @@ extension LiveCaptionsView {
     private var liveActivityButton: some View {
         glassToggleButton(
             systemImage: viewModel.isLiveActivityActive ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle",
-            isOn: viewModel.isLiveActivityActive,
             accessibilityLabel: viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕"
         ) {
             viewModel.toggleLiveActivity()
@@ -218,7 +212,6 @@ extension LiveCaptionsView {
     private var pipButton: some View {
         glassToggleButton(
             systemImage: viewModel.isPictureInPictureActive ? "pip.exit" : "pip.enter",
-            isOn: viewModel.isPictureInPictureActive,
             accessibilityLabel: viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕"
         ) {
             viewModel.togglePictureInPicture()
@@ -229,7 +222,6 @@ extension LiveCaptionsView {
     private var pauseButton: some View {
         glassToggleButton(
             systemImage: viewModel.isRecognitionPaused ? "play.fill" : "pause.fill",
-            isOn: viewModel.isRecognitionPaused,
             accessibilityLabel: viewModel.isRecognitionPaused ? "继续识别" : "暂停识别"
         ) {
             viewModel.toggleRecognitionPause()
@@ -239,7 +231,6 @@ extension LiveCaptionsView {
     /// 56×56 液态玻璃开关按钮（灵动岛 / 画中画 / 暂停共用）
     private func glassToggleButton(
         systemImage: String,
-        isOn: Bool,
         accessibilityLabel: String,
         action: @escaping () -> Void
     ) -> some View {

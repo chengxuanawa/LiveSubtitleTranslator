@@ -56,10 +56,6 @@ struct CaptionSegmentRow: View {
     /// 气泡本体：内容、入场动画与长按菜单
     private var bubble: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let speakerLabel {
-                SpeakerChip(label: speakerLabel)
-            }
-
             WordFlowText(
                 text: segment.originalText,
                 font: .body,
@@ -109,7 +105,7 @@ struct CaptionSegmentRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .captionBubbleBackground(speakerLabel: speakerLabel)
+        .captionBubbleStyle(speakerLabel: speakerLabel)
         .onChange(of: segment.displayTranslatedText) { oldValue, newValue in
             // 译文是异步回填的：首次出现时同样播一遍模糊 + 上浮动画
             guard oldValue == nil, newValue != nil else { return }

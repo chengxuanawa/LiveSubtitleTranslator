@@ -88,22 +88,23 @@ private struct TranscriptDetailView: View {
     /// 订阅设置变化，AI 引擎切换后摘要按钮状态即时刷新
     @EnvironmentObject private var settings: SettingsStore
 
-    @State private var session: TranscriptSession
+    private let initialSession: TranscriptSession
     @State private var isSummarizing = false
-    /// 摘要卡片是否已展示（新摘要生成后淡入揭开）
-    @State private var showSummary: Bool
     /// 单词释义弹窗
     @State private var wordLookupRequest: WordLookupRequest?
 
     init(session: TranscriptSession) {
-        _session = State(initialValue: session)
-        _showSummary = State(initialValue: session.summary != nil)
+        initialSession = session
+    }
+
+    private var session: TranscriptSession {
+        store.sessions.first { $0.id == initialSession.id } ?? initialSession
     }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                if showSummary, let summary = session.summary {
+                if let summary = session.summary {
                     summaryCard(summary)
                         .transition(.blurReplace)
                 }
@@ -162,25 +163,23 @@ private struct TranscriptDetailView: View {
         isSummarizing = true
         Task {
             defer { isSummarizing = false }
-            guard let summary = await aiService.summarize(session: session) else { return }
-            session.summary = summary
-            store.save(session)
+            let snapshot = session
+            guard let summary = await aiService.summarize(session: snapshot) else { return }
             withAnimation(.easeOut(duration: 0.34)) {
-                showSummary = true
+                store.update(snapshot.id) { $0.summary = summary }
             }
         }
     }
 
     /// 长按字幕行触发 AI 润色，并把结果写回当前会话
     private func polish(_ segment: CaptionSegment) {
-        guard let index = session.segments.firstIndex(where: { $0.id == segment.id }) else { return }
+        let snapshot = session
         Task {
             guard let polished = await aiService.polish(
                 segment: segment,
-                targetLanguage: session.targetLanguageIdentifier
+                targetLanguage: snapshot.targetLanguageIdentifier
             ) else { return }
-            session.segments[index].polishedText = polished
-            store.save(session)
+            store.updateSegment(segment.id, in: snapshot.id) { $0.polishedText = polished }
         }
     }
 

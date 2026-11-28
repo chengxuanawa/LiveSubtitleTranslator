@@ -9,8 +9,6 @@ struct WordFlowText: View {
     /// 入场渐显进度（0 = 模糊透明，1 = 清晰）
     var blurProgress: Double = 1
     var onWordTap: (String) -> Void
-    /// 横向滑选单词组合时回调；未提供时复用 onWordTap
-    var onPhraseSelect: ((String) -> Void)? = nil
 
     @State private var wordFrames: [Int: CGRect] = [:]
     @State private var selection: ClosedRange<Int>?
@@ -96,11 +94,7 @@ struct WordFlowText: View {
                     .joined()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !phrase.isEmpty else { return }
-                if let onPhraseSelect {
-                    onPhraseSelect(phrase)
-                } else {
-                    onWordTap(phrase)
-                }
+                onWordTap(phrase)
             }
     }
 

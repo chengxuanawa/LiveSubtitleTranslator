@@ -58,117 +58,109 @@ final class SpeakerDiarizationService: ObservableObject {
     /// 是否正在下载模型
     @Published private(set) var isPreparingModel = false
 
-    private let engine = SpeakerDiarizationEngine()
+    private var engine: SpeakerDiarizationEngine?
     private var spans: [SpeakerSpan] = []
     /// 按 FluidAudio 的 speakerId 累计说话人资料与性别
     private var profiles: [String: SpeakerProfile] = [:]
     private var nextSpeakerIndex = 1
     private var thermalTask: Task<Void, Never>?
-    private var isStarting = false
     /// 共用的模型下载任务，避免设置页与录制启动同时写模型目录
-    private var prepareTask: Task<Bool, Never>?
+    private var prepareTask: Task<Void, Never>?
     private var modelDownloadError: String?
 
     init() {
-        engine.onUpdate = { [weak self] update in
-            Task { @MainActor in
-                self?.apply(update)
-            }
-        }
         refreshModelSize()
     }
 
-    /// 开始新的分离会话；模型已缓存时启动较快。
+    /// 每场录制持有独立引擎，模型加载完成时核对录制是否仍有效。
     func start(sessionStart: Date?) async {
-        guard !isStarting, !isReady else { return }
-        isStarting = true
-        spans = []
-        profiles = [:]
-        nextSpeakerIndex = 1
-        speakerSummaryText = "—"
-        speakerCount = 0
-        currentSpeakerLabel = nil
+        guard engine == nil else { return }
+        let engine = SpeakerDiarizationEngine()
+        self.engine = engine
+        engine.onUpdate = { [weak self, weak engine] update in
+            guard let self, let engine, self.engine === engine, self.isReady else { return }
+            self.apply(update)
+        }
+        resetSessionMetrics()
         statusText = "下载/加载本地模型…"
-        // 首次使用或模型被系统清理时先下载，并复用设置页可能正在进行的下载
         await prepareModel()
+        guard self.engine === engine else { return }
         guard hasModelOnDisk else {
-            isStarting = false
+            self.engine = nil
             statusText = "模型下载失败：\(modelDownloadError ?? "网络异常")"
             return
         }
         statusText = "加载本地模型…"
         do {
             try await engine.start(sessionStart: sessionStart)
-            isStarting = false
+            guard self.engine === engine else {
+                engine.stop()
+                return
+            }
             isReady = true
-            refreshModelSize()
             statusText = "运行中（5 秒窗口）"
             startThermalPolling()
         } catch {
-            isStarting = false
-            isReady = false
+            guard self.engine === engine else { return }
+            self.engine = nil
             statusText = "不可用：\(error.localizedDescription)"
         }
     }
 
-    /// 下载模型：设置页开关打开时立即调用，无需先开始识别。
-    /// 已下载时只刷新大小；重复调用共用同一个下载任务。
+    /// 设置页和录制启动共用下载任务，下载状态只由创建任务的一方更新。
     func prepareModel() async {
-        if hasModelOnDisk {
-            refreshModelSize()
-            if !isReady, !isStarting {
-                statusText = "模型已就绪"
-            }
+        if let prepareTask {
+            await prepareTask.value
             return
         }
+        if hasModelOnDisk {
+            refreshModelSize()
+            if engine == nil { statusText = "模型已就绪" }
+            return
+        }
+
         isPreparingModel = true
         modelSizeText = "下载中…"
-        if !isReady, !isStarting {
-            statusText = "下载本地模型…"
-        }
-        let task: Task<Bool, Never>
-        if let existing = prepareTask {
-            task = existing
-        } else {
-            task = Task { [weak self] in
-                guard let self else { return false }
-                do {
-                    _ = try await DiarizerModels.downloadIfNeeded()
-                    return true
-                } catch {
-                    self.modelDownloadError = error.localizedDescription
-                    return false
+        if engine == nil { statusText = "下载本地模型…" }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.prepareTask = nil
+                self.isPreparingModel = false
+                self.refreshModelSize()
+            }
+            do {
+                _ = try await DiarizerModels.downloadIfNeeded()
+                self.modelDownloadError = nil
+                if self.engine == nil { self.statusText = "模型已就绪" }
+            } catch {
+                self.modelDownloadError = error.localizedDescription
+                if self.engine == nil {
+                    self.statusText = "模型下载失败：\(error.localizedDescription)"
                 }
             }
-            prepareTask = task
         }
-        let success = await task.value
-        prepareTask = nil
-        isPreparingModel = false
-        refreshModelSize()
-        if success {
-            modelDownloadError = nil
-            if !isReady, !isStarting {
-                statusText = "模型已就绪"
-            }
-        } else if !isReady, !isStarting {
-            statusText = "模型下载失败：\(modelDownloadError ?? "网络异常")"
-        }
+        prepareTask = task
+        await task.value
     }
 
     /// 喂入 16kHz 单声道音频；其他格式由 FluidAudio 内部重采样。
     func append(_ buffer: AVAudioPCMBuffer) {
         guard isReady else { return }
-        engine.append(buffer)
+        engine?.append(buffer)
     }
 
     func stop() {
-        engine.stop()
+        engine?.stop()
+        engine = nil
         thermalTask?.cancel()
         thermalTask = nil
         isReady = false
-        isStarting = false
         statusText = "已停止"
+        resetSessionMetrics()
+    }
+
+    private func resetSessionMetrics() {
         spans = []
         profiles = [:]
         nextSpeakerIndex = 1

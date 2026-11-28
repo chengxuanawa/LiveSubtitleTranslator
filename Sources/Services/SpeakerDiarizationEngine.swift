@@ -12,7 +12,7 @@ final class SpeakerDiarizationEngine {
         let realtimeFactor: Double
     }
 
-    var onUpdate: ((Update) -> Void)?
+    var onUpdate: (@MainActor (Update) -> Void)?
 
     private let queue = DispatchQueue(label: "com.example.sublingo.diarizer", qos: .utility)
     private var manager: DiarizerManager?

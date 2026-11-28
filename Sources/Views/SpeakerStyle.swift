@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 说话人配色与标签样式：按「说话人 N」的编号轮换颜色
 enum SpeakerPalette {
@@ -26,35 +27,34 @@ enum SpeakerPalette {
     }
 }
 
-/// 说话人小胶囊：彩色圆点 / 图标 + 标签
-struct SpeakerChip: View {
+/// 嵌在气泡上沿的小标签，正文和译文都不需要另起一行。
+struct SpeakerEdgeBadge: View {
     let label: String
-    /// 传入图标后替代圆点，用于实时气泡
-    var icon: String? = nil
 
-    private var tint: Color {
-        SpeakerPalette.tint(for: label)
+    private var shortLabel: String {
+        let prefix = "说话人 "
+        guard label.hasPrefix(prefix) else { return label }
+        return String(label.dropFirst(prefix.count))
     }
 
     var body: some View {
+        let tint = SpeakerPalette.tint(for: label)
         HStack(spacing: 4) {
-            if let icon {
-                Image(systemName: icon)
-            } else {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 6, height: 6)
-            }
-            Text(label)
+            Circle()
+                .fill(tint)
+                .frame(width: 5, height: 5)
+            Text(shortLabel)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.primary)
         }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(
-            Capsule(style: .continuous)
-                .fill(tint.opacity(0.14))
-        )
-        .frame(maxWidth: .infinity, alignment: SpeakerPalette.isRightAligned(label: label) ? .trailing : .leading)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .fixedSize()
+        .background {
+            Capsule()
+                .fill(Color(.secondarySystemBackground))
+                .overlay(Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 0.75))
+        }
+        .accessibilityLabel(Text(label))
     }
 }
