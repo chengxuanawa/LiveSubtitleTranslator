@@ -7,9 +7,35 @@ import SwiftUI
 struct SpeakerSpan: Identifiable {
     let id = UUID()
     let speakerID: String
-    let label: String
     let start: TimeInterval
     let end: TimeInterval
+}
+
+/// 基于基频的粗略性别判断（仅用于字幕参考）
+enum SpeakerGender: Equatable {
+    case male
+    case female
+    case unknown
+
+    var title: String {
+        switch self {
+        case .male: return "男声"
+        case .female: return "女声"
+        case .unknown: return ""
+        }
+    }
+}
+
+/// 一个说话人的累计信息：固定显示序号、基频样本与性别估计
+private struct SpeakerProfile {
+    let index: Int
+    var pitchSamples: [Double] = []
+    var gender: SpeakerGender = .unknown
+
+    var displayLabel: String {
+        let base = "说话人 \(index)"
+        return gender == .unknown ? base : "\(base) · \(gender.title)"
+    }
 }
 
 /// 实验性本地说话人分离：FluidAudio（Core ML / ANE）流式分析，给字幕提供说话人参考标签。
@@ -21,6 +47,7 @@ final class SpeakerDiarizationService: ObservableObject {
     @Published private(set) var lastChunkSeconds: Double = 0
     @Published private(set) var realtimeFactor: Double = 0
     @Published private(set) var currentSpeakerLabel: String?
+    @Published private(set) var speakerSummaryText = "—"
     @Published private(set) var thermalStateText = "正常"
     /// 模型昵称（设置页展示）
     let modelNickname = "Pyannote 3.1（流式分离）"
@@ -31,6 +58,9 @@ final class SpeakerDiarizationService: ObservableObject {
 
     private let engine = SpeakerDiarizationEngine()
     private var spans: [SpeakerSpan] = []
+    /// 按 FluidAudio 的 speakerId 累计说话人资料与性别
+    private var profiles: [String: SpeakerProfile] = [:]
+    private var nextSpeakerIndex = 1
     private var thermalTask: Task<Void, Never>?
     private var isStarting = false
     /// 共用的模型下载任务，避免设置页与录制启动同时写模型目录
@@ -51,6 +81,9 @@ final class SpeakerDiarizationService: ObservableObject {
         guard !isStarting, !isReady else { return }
         isStarting = true
         spans = []
+        profiles = [:]
+        nextSpeakerIndex = 1
+        speakerSummaryText = "—"
         speakerCount = 0
         currentSpeakerLabel = nil
         statusText = "下载/加载本地模型…"
@@ -135,22 +168,37 @@ final class SpeakerDiarizationService: ObservableObject {
         isStarting = false
         statusText = "已停止"
         spans = []
+        profiles = [:]
+        nextSpeakerIndex = 1
+        speakerSummaryText = "—"
         speakerCount = 0
         currentSpeakerLabel = nil
         lastChunkSeconds = 0
         realtimeFactor = 0
     }
 
-    /// 按会话内时间查找说话人标签；优先使用最近窗口的结果，时间片缺失时回退到最近片段。
+    /// 按会话内时间查找说话人标签；优先使用最近窗口的结果，时间片缺失时只回退很近的片段。
     func label(for time: TimeInterval) -> String? {
         guard isReady else { return nil }
+        let match: SpeakerSpan?
         if let exact = spans.last(where: { time >= $0.start && time <= $0.end }) {
-            return exact.label
+            match = exact
+        } else if let nearest = spans.min(by: {
+            Self.distance(from: time, to: $0) < Self.distance(from: time, to: $1)
+        }), Self.distance(from: time, to: nearest) <= 1.5 {
+            match = nearest
+        } else {
+            match = nil
         }
-        guard let nearest = spans.min(by: { abs($0.start - time) < abs($1.start - time) }) else {
-            return nil
-        }
-        return abs(nearest.start - time) <= 4 ? nearest.label : nil
+        guard let match else { return nil }
+        return profiles[match.speakerID]?.displayLabel
+    }
+
+    /// 时间点到时间片的距离；落在片内为 0
+    private static func distance(from time: TimeInterval, to span: SpeakerSpan) -> TimeInterval {
+        if time < span.start { return span.start - time }
+        if time > span.end { return time - span.end }
+        return 0
     }
 
     // MARK: - 模型文件
@@ -199,18 +247,52 @@ final class SpeakerDiarizationService: ObservableObject {
         return total
     }
 
+    // MARK: - 分离结果
+
     private func apply(_ update: SpeakerDiarizationEngine.Update) {
+        // 新出现的说话人先分配固定序号，保证标签顺序稳定
+        for span in update.spans where profiles[span.speakerID] == nil {
+            profiles[span.speakerID] = SpeakerProfile(index: nextSpeakerIndex)
+            nextSpeakerIndex += 1
+        }
+        // 累计基频样本，样本足够后给出男声/女声粗判
+        for (speakerID, pitches) in update.pitchBySpeaker where !pitches.isEmpty {
+            if profiles[speakerID] == nil {
+                profiles[speakerID] = SpeakerProfile(index: nextSpeakerIndex)
+                nextSpeakerIndex += 1
+            }
+            guard var profile = profiles[speakerID] else { continue }
+            profile.pitchSamples.append(contentsOf: pitches)
+            if profile.pitchSamples.count > 240 {
+                profile.pitchSamples.removeFirst(profile.pitchSamples.count - 240)
+            }
+            profile.gender = Self.classifyGender(profile.pitchSamples)
+            profiles[speakerID] = profile
+        }
+
         spans.append(contentsOf: update.spans)
         // 长时间录制只保留近期时间片，避免无限增长
         if spans.count > 400 {
             spans.removeFirst(spans.count - 400)
         }
-        speakerCount = Set(spans.map(\.speakerID)).count
+        speakerCount = profiles.count
         lastChunkSeconds = update.processingSeconds
         realtimeFactor = update.realtimeFactor
-        if let latest = update.spans.max(by: { $0.end < $1.end })?.label {
-            currentSpeakerLabel = latest
+        if let latestSpan = update.spans.max(by: { $0.end < $1.end }),
+           let latestLabel = profiles[latestSpan.speakerID]?.displayLabel {
+            currentSpeakerLabel = latestLabel
         }
+        speakerSummaryText = profiles.values
+            .sorted { $0.index < $1.index }
+            .map(\.displayLabel)
+            .joined(separator: "、")
+    }
+
+    /// 基频中位数低于 165 Hz 判为男声，否则女声；样本不足时先不标注
+    private static func classifyGender(_ samples: [Double]) -> SpeakerGender {
+        guard samples.count >= 8 else { return .unknown }
+        let sorted = samples.sorted()
+        return sorted[sorted.count / 2] < 165 ? .male : .female
     }
 
     private func startThermalPolling() {
@@ -231,111 +313,6 @@ final class SpeakerDiarizationService: ObservableObject {
         case .serious: thermalStateText = "较热"
         case .critical: thermalStateText = "过热"
         @unknown default: thermalStateText = "未知"
-        }
-    }
-}
-
-// MARK: - 后台推理
-
-/// 在串行队列上运行 FluidAudio 分离，避免占用主线程和音频写入线程。
-final class SpeakerDiarizationEngine {
-    struct Update {
-        let spans: [SpeakerSpan]
-        let processingSeconds: Double
-        let realtimeFactor: Double
-    }
-
-    var onUpdate: ((Update) -> Void)?
-
-    private let queue = DispatchQueue(label: "com.example.sublingo.diarizer", qos: .utility)
-    private var manager: DiarizerManager?
-    private var stream: AudioStream?
-    private var labelMap: [String: String] = [:]
-
-    func start(sessionStart: Date?) async throws {
-        // 首次会下载模型，之后走本地缓存
-        let models = try await DiarizerModels.downloadIfNeeded()
-        let offset = sessionStart.map { Date().timeIntervalSince($0) } ?? 0
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            queue.async {
-                do {
-                    let manager = DiarizerManager()
-                    manager.initialize(models: models)
-                    let stream = try AudioStream(
-                        chunkDuration: 5.0,
-                        chunkSkip: 3.0,
-                        streamStartTime: offset,
-                        chunkingStrategy: .useMostRecent,
-                        startupStrategy: .waitForFullChunk
-                    )
-                    stream.bind { [weak self] chunk, time in
-                        self?.queue.async {
-                            self?.process(chunk, at: time)
-                        }
-                    }
-                    self.manager = manager
-                    self.stream = stream
-                    self.labelMap = [:]
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    func append(_ buffer: AVAudioPCMBuffer) {
-        queue.async { [weak self] in
-            guard let self, let stream = self.stream else { return }
-            try? stream.write(from: buffer)
-        }
-    }
-
-    func stop() {
-        queue.async { [weak self] in
-            self?.stream?.unbind()
-            self?.stream = nil
-            self?.manager = nil
-            self?.labelMap = [:]
-        }
-    }
-
-    private func process(_ chunk: [Float], at time: TimeInterval) {
-        guard let manager else { return }
-        let started = Date()
-        do {
-            let result = try manager.performCompleteDiarization(chunk, atTime: time)
-            let processing = Date().timeIntervalSince(started)
-            let audioDuration = Double(chunk.count) / 16_000.0
-            var spans: [SpeakerSpan] = []
-            for segment in result.segments {
-                let label: String
-                if let existing = labelMap[segment.speakerId] {
-                    label = existing
-                } else {
-                    label = "说话人 \(labelMap.count + 1)"
-                    labelMap[segment.speakerId] = label
-                }
-                spans.append(
-                    SpeakerSpan(
-                        speakerID: segment.speakerId,
-                        label: label,
-                        start: Double(segment.startTimeSeconds),
-                        end: Double(segment.endTimeSeconds)
-                    )
-                )
-            }
-            guard !spans.isEmpty else { return }
-            let update = Update(
-                spans: spans,
-                processingSeconds: processing,
-                realtimeFactor: processing > 0 ? audioDuration / processing : 0
-            )
-            DispatchQueue.main.async { [weak self] in
-                self?.onUpdate?(update)
-            }
-        } catch {
-            // 单个窗口失败不影响字幕
         }
     }
 }

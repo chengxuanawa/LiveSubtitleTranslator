@@ -38,7 +38,7 @@ struct WordLookupCard: View {
             if isLoading {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("正在查询释义…")
+                    Text("正在查询…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -53,7 +53,7 @@ struct WordLookupCard: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                Text("暂时无法获取释义。可以长按句子拷贝后用系统词典查询。")
+                Text("暂时无法获取结果。可以长按句子拷贝后用系统词典查询。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

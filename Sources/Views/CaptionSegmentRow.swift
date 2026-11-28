@@ -52,14 +52,7 @@ struct CaptionSegmentRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let speakerLabel {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(speakerTint)
-                        .frame(width: 6, height: 6)
-                    Text(speakerLabel)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
+                SpeakerChip(label: speakerLabel)
             }
 
             WordFlowText(
@@ -112,6 +105,16 @@ struct CaptionSegmentRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .captionBubbleBackground()
+        // 说话人颜色条：让不同人的字幕在列表里一眼可分
+        .overlay(alignment: .leading) {
+            if let speakerLabel {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(SpeakerPalette.tint(for: speakerLabel))
+                    .frame(width: 3)
+                    .padding(.vertical, 12)
+                    .padding(.leading, 4)
+            }
+        }
         .padding(.horizontal, 12)
         .onChange(of: segment.displayTranslatedText) { oldValue, newValue in
             // 译文是异步回填的：首次出现时同样播一遍模糊 + 上浮动画
@@ -254,15 +257,5 @@ struct CaptionSegmentRow: View {
                 )
         )
         .shadow(color: Color.purple.opacity(0.18), radius: 8, x: 0, y: 3)
-    }
-
-    /// 说话人标签颜色：按编号轮换，方便区分两个人
-    private var speakerTint: Color {
-        guard let number = speakerLabel?.compactMap(\.wholeNumberValue).last else { return .secondary }
-        switch number % 3 {
-        case 1: return .blue
-        case 2: return .orange
-        default: return .green
-        }
     }
 }

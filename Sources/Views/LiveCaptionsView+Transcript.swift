@@ -18,12 +18,7 @@ extension LiveCaptionsView {
         VStack(alignment: .leading, spacing: 6) {
             if settings.speakerDiarizationExperiment,
                let speaker = speakerDiarization.currentSpeakerLabel {
-                HStack(spacing: 4) {
-                    Image(systemName: "person.wave.2.fill")
-                    Text(speaker)
-                }
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                SpeakerChip(label: speaker, icon: "person.wave.2.fill")
             }
 
             if revealedText.isEmpty {
@@ -180,14 +175,6 @@ extension LiveCaptionsView {
                 .padding(.vertical, 12)
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 8)
-                    .onChanged { value in
-                        // 仅上下拖动时固定列表；用户自己滑回底部后自动解除
-                        guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                        lockAutoScroll(proxy)
-                    }
-            )
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
             } action: { _, distanceToBottom in

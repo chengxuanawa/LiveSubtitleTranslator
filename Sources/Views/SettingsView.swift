@@ -79,6 +79,7 @@ struct SettingsView: View {
                 }
                 LabeledContent("模型状态", value: speakerDiarization.statusText)
                 LabeledContent("已识别人数", value: speakerCountText)
+                LabeledContent("说话人", value: speakerDiarization.speakerSummaryText)
                 LabeledContent("最近窗口耗时", value: lastChunkText)
                 LabeledContent("处理速度", value: realtimeFactorText)
                 LabeledContent("设备热状态", value: speakerDiarization.thermalStateText)
@@ -86,7 +87,7 @@ struct SettingsView: View {
         } header: {
             Text("说话人分离（实验）")
         } footer: {
-            Text("开启后自动在设备本机下载并运行 FluidAudio 说话人分离模型，之后完全离线，音频不出本机。给每条字幕标注「说话人 N」；两人对话时标签可能滞后或误判，仅供参考。开启后需重新开始识别才生效。")
+            Text("开启后自动在设备本机下载并运行 FluidAudio 说话人分离模型，之后完全离线，音频不出本机。给每条字幕标注「说话人 N」；男声/女声由基频粗略估计，两人对话时标签可能滞后或误判，仅供参考。开启后需重新开始识别才生效。")
         }
     }
 

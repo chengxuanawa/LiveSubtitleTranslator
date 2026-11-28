@@ -16,6 +16,11 @@ struct WordLookupService {
         if let explanation = await aiService.explainWord(word, sentence: sentence) {
             return WordLookupResult(word: word, definition: explanation, source: "AI 解释")
         }
+        // 免费在线词典只支持单个英文单词，词组 / 中文直接放弃回退
+        guard !word.contains(where: { $0.isWhitespace }),
+              word.unicodeScalars.allSatisfy({ $0.isASCII }) else {
+            return nil
+        }
         return await Self.freeDictionary(word: word)
     }
 

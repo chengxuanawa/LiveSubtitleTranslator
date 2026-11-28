@@ -45,12 +45,14 @@ final class AppleIntelligenceProvider: TextAIProviding {
     func explainWord(_ word: String, sentence: String, outputLanguage: String) async throws -> String? {
         let response = try await explainSessionValue().respond(
             to: """
-            单词：\(word)
+            选中的单词或短语：\(word)
             所在句子：\(sentence)
 
-            请结合句子语境，用\(outputLanguage)简洁解释这个单词在这里的意思。
-            要求：只输出 1-2 句纯文本，不要 Markdown、编号或引号；词性明确时可用「词性. 」开头；
-            不要翻译整句，只解释该词。
+            请结合句子语境，用\(outputLanguage)处理：
+            - 如果是单词，简洁解释它在这里的意思；
+            - 如果是多个单词组成的短语，直接给出它在句中的自然译文。
+            要求：只输出 1-2 句纯文本，不要 Markdown、编号或引号；
+            词性明确时可用「词性. 」开头（仅限单词）；不要翻译整句。
             """,
             options: GenerationOptions(temperature: 0.3)
         )
