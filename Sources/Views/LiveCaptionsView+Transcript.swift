@@ -7,10 +7,32 @@ extension LiveCaptionsView {
 
     // MARK: 实时字幕气泡（追加在列表底部）
 
-    /// 正在识别中的字幕气泡（列表中使用，左右留出与气泡相同的边距）
+    /// 正在识别中的字幕气泡（列表中使用，按当前说话人左右分边）
     private var liveBubble: some View {
-        liveBubbleCore
-            .padding(.horizontal, 12)
+        HStack(spacing: 0) {
+            if liveSpeakerLabel != nil, liveBubbleIsRightAligned {
+                Spacer(minLength: 64)
+            }
+            liveBubbleCore
+                .frame(maxWidth: liveSpeakerLabel == nil ? .infinity : 560)
+            if liveSpeakerLabel != nil, !liveBubbleIsRightAligned {
+                Spacer(minLength: 64)
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private var liveSpeakerLabel: String? {
+        settings.speakerDiarizationExperiment ? speakerDiarization.currentSpeakerLabel : nil
+    }
+
+    private var liveBubbleIsRightAligned: Bool {
+        SpeakerPalette.isRightAligned(label: liveSpeakerLabel)
+    }
+
+    private var liveBubbleTint: Color {
+        guard liveSpeakerLabel != nil else { return .clear }
+        return SpeakerPalette.tint(for: liveSpeakerLabel).opacity(0.16)
     }
 
     /// 正在识别中的字幕气泡本体：逐字显示，末尾字符渐显
@@ -52,6 +74,10 @@ extension LiveCaptionsView {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(liveBubbleTint)
+        )
         .captionBubbleBackground()
     }
 

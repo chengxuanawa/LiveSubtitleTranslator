@@ -7,6 +7,8 @@ import SwiftUI
 struct SpeakerSpan: Identifiable {
     let id = UUID()
     let speakerID: String
+    /// 该时间片首次入库时冻结的显示标签，后续性别变化不回改历史字幕
+    var label: String = ""
     let start: TimeInterval
     let end: TimeInterval
 }
@@ -191,7 +193,7 @@ final class SpeakerDiarizationService: ObservableObject {
             match = nil
         }
         guard let match else { return nil }
-        return profiles[match.speakerID]?.displayLabel
+        return match.label
     }
 
     /// 时间点到时间片的距离；落在片内为 0
@@ -255,7 +257,7 @@ final class SpeakerDiarizationService: ObservableObject {
             profiles[span.speakerID] = SpeakerProfile(index: nextSpeakerIndex)
             nextSpeakerIndex += 1
         }
-        // 累计基频样本，样本足够后给出男声/女声粗判
+        // 基频样本先入库，这样新时间片可以直接带上当时的性别判断
         for (speakerID, pitches) in update.pitchBySpeaker where !pitches.isEmpty {
             if profiles[speakerID] == nil {
                 profiles[speakerID] = SpeakerProfile(index: nextSpeakerIndex)
@@ -270,7 +272,16 @@ final class SpeakerDiarizationService: ObservableObject {
             profiles[speakerID] = profile
         }
 
-        spans.append(contentsOf: update.spans)
+        // 标签在这里冻结：之后性别再变化，也不会把之前的字幕全部改掉
+        var labeledSpans: [SpeakerSpan] = []
+        labeledSpans.reserveCapacity(update.spans.count)
+        for span in update.spans {
+            var labeled = span
+            labeled.label = profiles[span.speakerID]?.displayLabel ?? "说话人 ?"
+            labeledSpans.append(labeled)
+        }
+
+        spans.append(contentsOf: labeledSpans)
         // 长时间录制只保留近期时间片，避免无限增长
         if spans.count > 400 {
             spans.removeFirst(spans.count - 400)
@@ -278,9 +289,8 @@ final class SpeakerDiarizationService: ObservableObject {
         speakerCount = profiles.count
         lastChunkSeconds = update.processingSeconds
         realtimeFactor = update.realtimeFactor
-        if let latestSpan = update.spans.max(by: { $0.end < $1.end }),
-           let latestLabel = profiles[latestSpan.speakerID]?.displayLabel {
-            currentSpeakerLabel = latestLabel
+        if let latestSpan = labeledSpans.max(by: { $0.end < $1.end }) {
+            currentSpeakerLabel = latestSpan.label
         }
         speakerSummaryText = profiles.values
             .sorted { $0.index < $1.index }

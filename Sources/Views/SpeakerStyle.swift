@@ -15,6 +15,15 @@ enum SpeakerPalette {
         guard let index = index(from: label), index > 0 else { return .secondary }
         return colors[(index - 1) % colors.count]
     }
+
+    /// 男声靠左、女声靠右；性别未知时按序号奇偶分边
+    static func isRightAligned(label: String?) -> Bool {
+        guard let label else { return false }
+        if label.contains("女声") { return true }
+        if label.contains("男声") { return false }
+        guard let index = index(from: label) else { return false }
+        return index % 2 == 0
+    }
 }
 
 /// 说话人小胶囊：彩色圆点 / 图标 + 标签
