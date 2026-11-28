@@ -13,6 +13,8 @@ protocol SpeechRecognizing: AnyObject {
     var onFinalSegment: ((_ text: String, _ startTime: TimeInterval) -> Void)? { get set }
     /// 实时部分识别结果（用于打字机式预览）
     var onPartialUpdate: ((_ text: String) -> Void)? { get set }
+    /// 麦克风原始缓冲（供说话人分离等旁路分析）
+    var onMicrophoneBuffer: ((AVAudioPCMBuffer) -> Void)? { get set }
     /// 发生错误（权限被拒、语言不支持等）
     var onError: ((_ message: String) -> Void)? { get set }
 
@@ -48,6 +50,7 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
     var onFinalSegment: ((_ text: String, _ startTime: TimeInterval) -> Void)?
     var onPartialUpdate: ((_ text: String) -> Void)?
+    var onMicrophoneBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onError: ((_ message: String) -> Void)?
 
     // MARK: - 识别会话
@@ -138,9 +141,11 @@ final class SpeechRecognizerService: SpeechRecognizing {
             inputNode.removeTap(onBus: 0)
             isTapInstalled = false
         }
+        let micHandler = onMicrophoneBuffer
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             guard let converted = Self.convert(buffer, using: converter, to: targetFormat) else { return }
             continuation?.yield(AnalyzerInput(buffer: converted))
+            micHandler?(converted)
         }
         isTapInstalled = true
 

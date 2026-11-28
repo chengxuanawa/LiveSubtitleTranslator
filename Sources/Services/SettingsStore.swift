@@ -24,6 +24,8 @@ final class SettingsStore: ObservableObject {
     @AppStorage("realtimeTranslationEnabled") var realtimeTranslationEnabled = true
     /// 识别期间是否阻止屏幕自动熄灭
     @AppStorage("keepScreenOnWhileRecognizing") private var keepScreenOnRaw = false
+    /// 实验：本地说话人分离，给字幕标注说话人
+    @AppStorage("speakerDiarizationExperiment") var speakerDiarizationExperiment = false
 
     // AI 底层配置保留（仅用于摘要数据兼容）
     @AppStorage("aiProviderModeRaw") private var aiProviderModeRaw = AIProviderMode.auto.rawValue

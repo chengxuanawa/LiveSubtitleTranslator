@@ -5,6 +5,7 @@ struct SettingsView: View {
 
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var aiService: AIService
+    @EnvironmentObject private var speakerDiarization: SpeakerDiarizationService
 
     @State private var apiKeyInput = ""
     @State private var apiKeyLoaded = false
@@ -13,6 +14,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 recognitionSection
+                speakerDiarizationSection
                 audioSourceSection
                 liveActivitySection
                 aiSection
@@ -33,6 +35,10 @@ struct SettingsView: View {
                     apiKeyInput = settings.apiKey
                     apiKeyLoaded = true
                 }
+                // 已开启实验但模型缺失（首装/被系统清理）时自动补下载
+                if settings.speakerDiarizationExperiment {
+                    Task { await speakerDiarization.prepareModel() }
+                }
             }
         }
     }
@@ -52,6 +58,62 @@ struct SettingsView: View {
         } footer: {
             Text("开启后，在实时字幕识别期间不会自动锁屏；停止识别立即恢复正常息屏。iOS 26 的 SpeechAnalyzer 只提供设备端识别，苹果已不提供第三方云端语音识别路径；云端模型仅用于「AI 功能」中的自定义 AI API。")
         }
+    }
+
+    // MARK: - 说话人分离（实验）
+
+    private var speakerDiarizationSection: some View {
+        Section {
+            Toggle("字幕标注说话人（实验）", isOn: speakerExperimentBinding)
+            if settings.speakerDiarizationExperiment {
+                LabeledContent("模型昵称", value: speakerDiarization.modelNickname)
+                LabeledContent("模型大小") {
+                    HStack(spacing: 6) {
+                        if speakerDiarization.isPreparingModel {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                        Text(speakerDiarization.modelSizeText)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("模型状态", value: speakerDiarization.statusText)
+                LabeledContent("已识别人数", value: speakerCountText)
+                LabeledContent("最近窗口耗时", value: lastChunkText)
+                LabeledContent("处理速度", value: realtimeFactorText)
+                LabeledContent("设备热状态", value: speakerDiarization.thermalStateText)
+            }
+        } header: {
+            Text("说话人分离（实验）")
+        } footer: {
+            Text("开启后自动在设备本机下载并运行 FluidAudio 说话人分离模型，之后完全离线，音频不出本机。给每条字幕标注「说话人 N」；两人对话时标签可能滞后或误判，仅供参考。开启后需重新开始识别才生效。")
+        }
+    }
+
+    /// 开关打开时立即预下载模型，不必先开始识别
+    private var speakerExperimentBinding: Binding<Bool> {
+        Binding(
+            get: { settings.speakerDiarizationExperiment },
+            set: { enabled in
+                settings.speakerDiarizationExperiment = enabled
+                guard enabled else { return }
+                Task { await speakerDiarization.prepareModel() }
+            }
+        )
+    }
+
+    private var speakerCountText: String {
+        speakerDiarization.speakerCount > 0 ? "\(speakerDiarization.speakerCount) 人" : "—"
+    }
+
+    private var lastChunkText: String {
+        guard speakerDiarization.lastChunkSeconds > 0 else { return "—" }
+        return String(format: "%.2f 秒 / 5 秒音频", speakerDiarization.lastChunkSeconds)
+    }
+
+    private var realtimeFactorText: String {
+        guard speakerDiarization.realtimeFactor > 0 else { return "—" }
+        return String(format: "%.1f 倍实时", speakerDiarization.realtimeFactor)
     }
 
     // MARK: - 音频来源

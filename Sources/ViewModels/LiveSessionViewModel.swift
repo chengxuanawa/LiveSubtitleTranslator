@@ -67,6 +67,8 @@ final class LiveSessionViewModel: ObservableObject {
     private let locationService = LocationService()
     private let keepAlive = SilentAudioKeepAlive()
     private let pipController = CaptionPictureInPictureController()
+    /// 实验性说话人分离（设置中开启后生效）
+    let speakerDiarization = SpeakerDiarizationService()
 
     // MARK: - 会话上下文
 
@@ -183,6 +185,11 @@ final class LiveSessionViewModel: ObservableObject {
         speechRecognizer.onPartialUpdate = { [weak self] text in
             self?.publishPartialText(text)
         }
+        speechRecognizer.onMicrophoneBuffer = { [weak self] buffer in
+            Task { @MainActor in
+                self?.speakerDiarization.append(buffer)
+            }
+        }
         speechRecognizer.onFinalSegment = { [weak self] text, startTime in
             self?.handleFinalSegment(text, startTime: startTime)
         }
@@ -199,6 +206,7 @@ final class LiveSessionViewModel: ObservableObject {
             }
             // 暂停时直接丢弃音频，广播与录屏不受影响
             guard !self.isRecognitionPaused else { return }
+            self.speakerDiarization.append(buffer)
             self.speechRecognizer.appendExternalBuffer(buffer)
         }
         systemAudioServer.onStreamStarted = { [weak self] in
@@ -429,6 +437,7 @@ final class LiveSessionViewModel: ObservableObject {
 
         if errorMessage == nil {
             state = .listening
+            startSpeakerDiarizationIfNeeded()
             autoStartVisualIfNeeded()
         }
     }
@@ -448,6 +457,7 @@ final class LiveSessionViewModel: ObservableObject {
             startSystemAudioWatchdog()
             // 扩展重连时也要补一次自动浮窗，避免首轮因后台被推迟后再无机会启动
             autoStartVisualIfNeeded()
+            startSpeakerDiarizationIfNeeded()
             return
         }
 
@@ -465,6 +475,7 @@ final class LiveSessionViewModel: ObservableObject {
         // 广播期间保持后台运行，确保本地音频服务器不被挂起
         keepAlive.start()
         autoStartVisualIfNeeded()
+        startSpeakerDiarizationIfNeeded()
         startSystemAudioWatchdog()
 
         startExternalRecognitionIfNeeded()
@@ -668,6 +679,7 @@ final class LiveSessionViewModel: ObservableObject {
 
     /// 新录制开始前重置会话数据与所有缓冲区
     private func resetForNewRecording() {
+        speakerDiarization.stop()
         isRecognitionPaused = false
         recognitionRetryCount = 0
         lastRecognitionRetryAt = .distantPast
@@ -696,6 +708,7 @@ final class LiveSessionViewModel: ObservableObject {
         pendingAutoPiPTask?.cancel()
         pendingAutoPiPTask = nil
         pendingAutoPiPStart = false
+        speakerDiarization.stop()
         liveActivity.end()
         keepAlive.stop()
         pipController.stop()
@@ -746,6 +759,13 @@ final class LiveSessionViewModel: ObservableObject {
         case .liveActivity, .pictureInPicture:
             return settings.visualMode
         }
+    }
+
+    /// 实验性说话人分离：设置开启后随录制启动，模型下载/初始化在后台进行
+    private func startSpeakerDiarizationIfNeeded() {
+        guard settings.speakerDiarizationExperiment else { return }
+        let start = sessionStart
+        Task { await speakerDiarization.start(sessionStart: start) }
     }
 
     private func autoStartVisualIfNeeded() {

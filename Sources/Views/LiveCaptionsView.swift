@@ -8,6 +8,7 @@ struct LiveCaptionsView: View {
     @EnvironmentObject var viewModel: LiveSessionViewModel
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var aiService: AIService
+    @EnvironmentObject var speakerDiarization: SpeakerDiarizationService
     /// 横屏兜底判断：部分情况下窗口尺寸更新滞后，紧凑高度也视为横屏
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 

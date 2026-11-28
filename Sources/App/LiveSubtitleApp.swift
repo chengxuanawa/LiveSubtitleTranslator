@@ -33,6 +33,7 @@ struct LiveSubtitleApp: App {
                 .environmentObject(settings)
                 .environmentObject(transcriptStore)
                 .environmentObject(aiService)
+                .environmentObject(viewModel.speakerDiarization)
                 .sheet(isPresented: onboardingBinding) {
                     OnboardingView()
                         .environmentObject(settings)

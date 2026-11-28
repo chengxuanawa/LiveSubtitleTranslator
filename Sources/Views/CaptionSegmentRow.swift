@@ -16,6 +16,8 @@ struct CaptionSegmentRow: View {
     var onReveal: (() -> Void)? = nil
     /// 单击原文单词时回调（单词, 所在句子）
     var onWordTap: ((_ word: String, _ sentence: String) -> Void)? = nil
+    /// 实验性说话人标签，如「说话人 1」
+    var speakerLabel: String? = nil
 
     /// 原文 / 译文的模糊渐显进度
     @State private var originalProgress: Double
@@ -30,7 +32,8 @@ struct CaptionSegmentRow: View {
         onRetryTranslation: (() -> Void)? = nil,
         onPolishRequest: (() -> Void)? = nil,
         onReveal: (() -> Void)? = nil,
-        onWordTap: ((_ word: String, _ sentence: String) -> Void)? = nil
+        onWordTap: ((_ word: String, _ sentence: String) -> Void)? = nil,
+        speakerLabel: String? = nil
     ) {
         self.segment = segment
         self.showTranslationFailure = showTranslationFailure
@@ -39,6 +42,7 @@ struct CaptionSegmentRow: View {
         self.onPolishRequest = onPolishRequest
         self.onReveal = onReveal
         self.onWordTap = onWordTap
+        self.speakerLabel = speakerLabel
         // 新卡片以不可见文字参与布局，等一帧后再模糊淡入；
         // 历史或已播放过的卡片直接以最终状态显示
         _originalProgress = State(initialValue: segment.hasAnimated ? 1 : 0)
@@ -47,6 +51,17 @@ struct CaptionSegmentRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let speakerLabel {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(speakerTint)
+                        .frame(width: 6, height: 6)
+                    Text(speakerLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             WordFlowText(
                 text: segment.originalText,
                 font: .body,
@@ -239,5 +254,15 @@ struct CaptionSegmentRow: View {
                 )
         )
         .shadow(color: Color.purple.opacity(0.18), radius: 8, x: 0, y: 3)
+    }
+
+    /// 说话人标签颜色：按编号轮换，方便区分两个人
+    private var speakerTint: Color {
+        guard let number = speakerLabel?.compactMap(\.wholeNumberValue).last else { return .secondary }
+        switch number % 3 {
+        case 1: return .blue
+        case 2: return .orange
+        default: return .green
+        }
     }
 }

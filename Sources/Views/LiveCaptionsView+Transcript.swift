@@ -16,6 +16,16 @@ extension LiveCaptionsView {
     /// 正在识别中的字幕气泡本体：逐字显示，末尾字符渐显
     private var liveBubbleCore: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if settings.speakerDiarizationExperiment,
+               let speaker = speakerDiarization.currentSpeakerLabel {
+                HStack(spacing: 4) {
+                    Image(systemName: "person.wave.2.fill")
+                    Text(speaker)
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+
             if revealedText.isEmpty {
                 if viewModel.liveDisplayText.isEmpty {
                     Text(viewModel.livePlaceholderText)
@@ -141,7 +151,10 @@ extension LiveCaptionsView {
                             onReveal: { viewModel.markSegmentAnimated(segment.id) },
                             onWordTap: { word, sentence in
                                 wordLookupRequest = WordLookupRequest(word: word, sentence: sentence)
-                            }
+                            },
+                            speakerLabel: settings.speakerDiarizationExperiment
+                                ? speakerDiarization.label(for: segment.startTime)
+                                : nil
                         )
                         .id(segment.id)
                         // 只做淡入：卡片位置由列表展开和滚动弹簧带动，
