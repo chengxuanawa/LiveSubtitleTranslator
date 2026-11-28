@@ -203,6 +203,7 @@ extension LiveCaptionsView {
     private var liveActivityButton: some View {
         glassToggleButton(
             systemImage: viewModel.isLiveActivityActive ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle",
+            isOn: viewModel.isLiveActivityActive,
             accessibilityLabel: viewModel.isLiveActivityActive ? "关闭灵动岛字幕" : "在灵动岛显示字幕"
         ) {
             viewModel.toggleLiveActivity()
@@ -212,6 +213,7 @@ extension LiveCaptionsView {
     private var pipButton: some View {
         glassToggleButton(
             systemImage: viewModel.isPictureInPictureActive ? "pip.exit" : "pip.enter",
+            isOn: viewModel.isPictureInPictureActive,
             accessibilityLabel: viewModel.isPictureInPictureActive ? "退出画中画字幕" : "在画中画显示字幕"
         ) {
             viewModel.togglePictureInPicture()
@@ -222,6 +224,7 @@ extension LiveCaptionsView {
     private var pauseButton: some View {
         glassToggleButton(
             systemImage: viewModel.isRecognitionPaused ? "play.fill" : "pause.fill",
+            isOn: viewModel.isRecognitionPaused,
             accessibilityLabel: viewModel.isRecognitionPaused ? "继续识别" : "暂停识别"
         ) {
             viewModel.toggleRecognitionPause()
@@ -231,6 +234,7 @@ extension LiveCaptionsView {
     /// 56×56 液态玻璃开关按钮（灵动岛 / 画中画 / 暂停共用）
     private func glassToggleButton(
         systemImage: String,
+        isOn: Bool,
         accessibilityLabel: String,
         action: @escaping () -> Void
     ) -> some View {
