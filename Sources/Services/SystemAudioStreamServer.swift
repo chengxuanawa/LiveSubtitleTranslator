@@ -10,10 +10,10 @@ final class SystemAudioStreamServer: ObservableObject {
     @Published private(set) var isReceivingAudio = false
 
     var onAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
-    var onStreamStarted: (() -> Void)?
+    var onBroadcastHeartbeat: (() -> Void)?
     var onStreamEnded: (() -> Void)?
-    /// 连接断开后已超过宽限期，界面可提示“录屏可能仍在继续，请重新开始共享”
     var onStreamStalled: (() -> Void)?
+    var onReconnectTimedOut: (() -> Void)?
 
     private var listener: NWListener?
     private var connection: NWConnection?
@@ -49,9 +49,13 @@ final class SystemAudioStreamServer: ObservableObject {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
             let listener = try NWListener(using: parameters, on: port)
-            listener.newConnectionHandler = { [weak self] connection in
-                Task { @MainActor [weak self] in
-                    self?.accept(connection)
+            listener.newConnectionHandler = { [weak self, weak listener] connection in
+                Task { @MainActor [weak self, weak listener] in
+                    guard let self, let listener, self.listener === listener else {
+                        connection.cancel()
+                        return
+                    }
+                    self.accept(connection)
                 }
             }
             listener.stateUpdateHandler = { [weak self, weak listener] state in
@@ -63,8 +67,7 @@ final class SystemAudioStreamServer: ObservableObject {
                         // 必须取消后重建，否则界面会一直停在“等待广播”。
                         listener.cancel()
                         self.listener = nil
-                        self.isWaitingForBroadcast = false
-                        self.isReceivingAudio = false
+                        self.isWaitingForBroadcast = !self.isReceivingAudio
                         self.scheduleListenerRetry()
                     default:
                         break
@@ -73,7 +76,7 @@ final class SystemAudioStreamServer: ObservableObject {
             }
             listener.start(queue: DispatchQueue(label: "system.audio.listener"))
             self.listener = listener
-            isWaitingForBroadcast = true
+            isWaitingForBroadcast = !isReceivingAudio
             return true
         } catch {
             isWaitingForBroadcast = false
@@ -152,7 +155,10 @@ final class SystemAudioStreamServer: ObservableObject {
         self.connection = connection
         oldConnection?.cancel()
         receiveBuffer.removeAll()
-        lastPacketAt = nil
+        isReceivingAudio = false
+        isWaitingForBroadcast = true
+        lastPacketAt = Date()
+        startWatchdog()
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             Task { @MainActor [weak self, weak connection] in
                 // 旧连接被取消时不能影响新连接，否则会把刚建立的流一起断掉
@@ -161,12 +167,8 @@ final class SystemAudioStreamServer: ObservableObject {
                 case .ready:
                     self.disconnectTask?.cancel()
                     self.disconnectTask = nil
-                    self.isWaitingForBroadcast = false
-                    self.isReceivingAudio = true
-                    // 从就绪时刻开始计时：扩展每秒都会发心跳，超时即说明连接已失效
+                    // 就绪和心跳只能证明连接存在，收到有效 PCM 后才标记为有音频。
                     self.lastPacketAt = Date()
-                    self.onStreamStarted?()
-                    self.startWatchdog()
                     // NWConnection 必须先进入 ready 才能接收数据；在 start 后立刻
                     // 调用 receive 可能返回错误，把刚建立的广播误判为断开。
                     self.receiveNext()
@@ -189,6 +191,7 @@ final class SystemAudioStreamServer: ObservableObject {
                 if let data, !data.isEmpty {
                     self.consume(data)
                 }
+                guard self.connection === connection else { return }
                 if isComplete || error != nil {
                     self.handleDisconnect()
                     return
@@ -212,6 +215,7 @@ final class SystemAudioStreamServer: ObservableObject {
             if length == 0 {
                 receiveBuffer.removeSubrange(start..<headerEnd)
                 lastPacketAt = Date()
+                onBroadcastHeartbeat?()
                 continue
             }
             guard length <= AudioStreamProtocol.maxPacketBytes else {
@@ -232,7 +236,7 @@ final class SystemAudioStreamServer: ObservableObject {
     }
 
     private func deliver(_ payload: Data) {
-        lastPacketAt = Date()
+        guard !payload.isEmpty, payload.count.isMultiple(of: MemoryLayout<Int16>.size) else { return }
         if audioFormat == nil {
             audioFormat = AVAudioFormat(
                 commonFormat: .pcmFormatInt16,
@@ -253,6 +257,11 @@ final class SystemAudioStreamServer: ObservableObject {
                 memcpy(channel, base, Int(frameCount) * MemoryLayout<Int16>.size)
             }
         }
+        lastPacketAt = Date()
+        if !isReceivingAudio {
+            isReceivingAudio = true
+            isWaitingForBroadcast = false
+        }
         onAudioBuffer?(buffer)
     }
 
@@ -266,6 +275,7 @@ final class SystemAudioStreamServer: ObservableObject {
         lastPacketAt = nil
         // 监听器还在时，广播扩展会自动重连；界面应显示“等待广播”
         isWaitingForBroadcast = listener != nil
+        onStreamStalled?()
         // 广播扩展断线后会自动重连，先留出宽限期；只有持续没有新连接才视为共享结束
         if isAppActive {
             scheduleStreamEnd(after: 6)
@@ -294,7 +304,7 @@ final class SystemAudioStreamServer: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, let self, self.connection == nil else { return }
             self.disconnectTask = nil
-            self.onStreamEnded?()
+            self.onReconnectTimedOut?()
         }
     }
 

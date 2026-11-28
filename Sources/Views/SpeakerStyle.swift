@@ -55,5 +55,6 @@ struct SpeakerChip: View {
             Capsule(style: .continuous)
                 .fill(tint.opacity(0.14))
         )
+        .frame(maxWidth: .infinity, alignment: SpeakerPalette.isRightAligned(label: label) ? .trailing : .leading)
     }
 }

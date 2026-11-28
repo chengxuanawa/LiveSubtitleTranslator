@@ -3,39 +3,6 @@ import CoreMedia
 import Foundation
 import Speech
 
-/// 实时语音识别能力抽象。
-/// 二次开发时可使用 WhisperKit、sherpa-onnx 等引擎实现该协议进行替换。
-@MainActor
-protocol SpeechRecognizing: AnyObject {
-    /// 识别语言
-    var locale: Locale { get set }
-    /// 识别到一句完整的话（终态结果）
-    var onFinalSegment: ((_ text: String, _ startTime: TimeInterval) -> Void)? { get set }
-    /// 实时部分识别结果（用于打字机式预览）
-    var onPartialUpdate: ((_ text: String) -> Void)? { get set }
-    /// 麦克风原始缓冲（供说话人分离等旁路分析）
-    var onMicrophoneBuffer: ((AVAudioPCMBuffer) -> Void)? { get set }
-    /// 发生错误（权限被拒、语言不支持等）
-    var onError: ((_ message: String) -> Void)? { get set }
-
-    func start() async
-    func stop()
-
-    /// 以外部音频流启动识别（系统共享音频，不启动麦克风引擎）
-    func startExternalAudio() async
-    /// 向识别请求喂入外部音频缓冲
-    func appendExternalBuffer(_ buffer: AVAudioPCMBuffer)
-    /// 外部音频识别是否已成功启动并在运行（用于判断启动是否失败）
-    var isExternalAudioRunning: Bool { get }
-}
-
-/// 默认实现：非 Speech 引擎（如 WhisperKit）可按需覆盖
-extension SpeechRecognizing {
-    func startExternalAudio() async {}
-    func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {}
-    var isExternalAudioRunning: Bool { true }
-}
-
 /// 基于 iOS 26 SpeechAnalyzer + SpeechTranscriber 的实时语音识别实现。
 /// 新版模型自带断句、标点与上下文纠错，段落由系统按语义切分，
 /// 不再依赖能量阈值或“静音多少秒”之类的启发式规则。
@@ -62,14 +29,17 @@ final class SpeechRecognizerService: SpeechRecognizing {
     private var analyzerFormat: AVAudioFormat?
     /// 外部音频重采样放到后台串行队列，避免每个音频包占用主线程
     private let externalAudioQueue = DispatchQueue(label: "com.example.sublingo.external.audio", qos: .userInitiated)
-    private let externalConverterBox = ExternalAudioConverter()
+    private var externalConverterBox = ExternalAudioConverter()
 
+    private var generation = 0
+    private var hasMicrophoneAudioSession = false
     private var isTapInstalled = false
     private var isRunning = false
     private var isExternalAudio = false
     /// 首帧音频可能早于识别会话就绪到达：先缓存，启动后立即补喂，避免开头整段丢失
-    private var externalAudioBacklog: [AVAudioPCMBuffer] = []
+    private var externalAudioBacklog: [(buffer: AVAudioPCMBuffer, receivedAt: Date)] = []
     private var sessionStartDate = Date()
+    private var analysisTimeOffset: TimeInterval = 0
     private var latestPartialText = ""
     private var lastSegmentEnd: TimeInterval = 0
 
@@ -77,44 +47,31 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
     func start() async {
         tearDown()
-        isExternalAudio = false
-        externalAudioBacklog.removeAll()
-
-        guard await AVAudioApplication.requestRecordPermission() else {
+        let generation = self.generation
+        let granted = await AVAudioApplication.requestRecordPermission()
+        guard isCurrent(generation) else { return }
+        guard granted else {
             onError?("未获得麦克风权限，请到系统设置中授权。")
             return
         }
 
-        guard let setup = await prepareAnalyzer() else { return }
-        self.analyzer = setup.analyzer
-
-        sessionStartDate = Date()
-        lastSegmentEnd = 0
-        latestPartialText = ""
-        isRunning = true
-
         do {
-            try await beginAnalysis(setup)
+            try await startAnalysis(generation: generation)
         } catch {
-            onError?("语音识别启动失败：\(error.localizedDescription)")
-            tearDown()
+            failStartup(error, generation: generation)
             return
         }
+        guard isCurrent(generation) else { return }
 
-        // 音频会话：录音 + 与其他 App 音频混音，避免播放音频时麦克风会话被抢占
+        hasMicrophoneAudioSession = true
         do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(
-                .playAndRecord,
-                mode: .measurement,
-                options: [.mixWithOthers, .defaultToSpeaker]
-            )
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            try await AppAudioSession.activateMicrophone()
         } catch {
-            onError?("音频会话启动失败：\(error.localizedDescription)")
-            tearDown()
+            guard isCurrent(generation) else { return }
+            finishAnalysisWithError("音频会话启动失败：\(error.localizedDescription)")
             return
         }
+        guard isCurrent(generation) else { return }
 
         // 校验麦克风输入格式（采样率或通道为 0 时 installTap 会崩溃）
         let inputNode = audioEngine.inputNode
@@ -143,7 +100,7 @@ final class SpeechRecognizerService: SpeechRecognizing {
         }
         let micHandler = onMicrophoneBuffer
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
-            guard let converted = Self.convert(buffer, using: converter, to: targetFormat) else { return }
+            guard let converted = convertSpeechPCM(buffer, using: converter, to: targetFormat) else { return }
             continuation?.yield(AnalyzerInput(buffer: converted))
             micHandler?(converted)
         }
@@ -167,33 +124,47 @@ final class SpeechRecognizerService: SpeechRecognizing {
                 submitSegment(trailing, audioStart: nil)
             }
         }
-        resetEngine(cancelAnalyzer: false, deactivateAudioSession: true)
+        resetEngine(cancelAnalyzer: !isRunning, deactivateAudioSession: true)
     }
 
     // MARK: - 系统共享音频
 
-    func startExternalAudio() async {
-        isExternalAudio = true
+    func startExternalAudio(sessionStartedAt: Date) async {
         stopExternalAudio(preserveBufferedAudio: true)
-        guard let setup = await prepareAnalyzer() else {
-            stopExternalAudio()
-            return
-        }
-        self.analyzer = setup.analyzer
-
-        sessionStartDate = Date()
-        lastSegmentEnd = 0
-        latestPartialText = ""
-        isRunning = true
-
+        externalConverterBox = ExternalAudioConverter()
+        let generation = self.generation
         do {
-            try await beginAnalysis(setup)
+            try await startAnalysis(generation: generation)
         } catch {
-            onError?("语音识别启动失败：\(error.localizedDescription)")
-            stopExternalAudio()
+            failStartup(error, generation: generation)
             return
         }
+        guard isCurrent(generation) else { return }
+        sessionStartDate = sessionStartedAt
+        let firstAudioAt = externalAudioBacklog.first?.receivedAt ?? Date()
+        analysisTimeOffset = max(0, firstAudioAt.timeIntervalSince(sessionStartedAt))
+        lastSegmentEnd = analysisTimeOffset
         flushExternalAudioBacklog()
+    }
+
+    private func isCurrent(_ generation: Int) -> Bool {
+        self.generation == generation && !Task.isCancelled
+    }
+
+    private func failStartup(_ error: Error, generation: Int) {
+        guard isCurrent(generation) else { return }
+        let message = (error as? StartupError)?.errorDescription
+            ?? "语音识别启动失败：\(error.localizedDescription)"
+        finishAnalysisWithError(message)
+    }
+
+    private func finishAnalysisWithError(_ message: String) {
+        if isExternalAudio {
+            stopExternalAudio(preserveBufferedAudio: true)
+        } else {
+            tearDown()
+        }
+        onError?(message)
     }
 
     /// 系统共享音频模式只释放识别资源，不关闭 App 的音频会话：
@@ -209,8 +180,8 @@ final class SpeechRecognizerService: SpeechRecognizing {
     var isExternalAudioRunning: Bool { isRunning && isExternalAudio }
 
     func appendExternalBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard isRunning, let continuation = inputContinuation else {
-            externalAudioBacklog.append(buffer)
+        guard isExternalAudioRunning, let continuation = inputContinuation, let targetFormat = analyzerFormat else {
+            externalAudioBacklog.append((buffer, Date()))
             // 最多缓存约 4.5 秒音频：识别模型准备期间不丢开头，也不会无限增长
             if externalAudioBacklog.count > 200 {
                 externalAudioBacklog.removeFirst(externalAudioBacklog.count - 200)
@@ -218,7 +189,6 @@ final class SpeechRecognizerService: SpeechRecognizing {
             return
         }
 
-        let targetFormat = analyzerFormat ?? buffer.format
         // 重采样在后台串行队列完成，保持音频顺序且不阻塞主线程
         let converterBox = externalConverterBox
         externalAudioQueue.async {
@@ -230,23 +200,40 @@ final class SpeechRecognizerService: SpeechRecognizing {
     private func flushExternalAudioBacklog() {
         let pending = externalAudioBacklog
         externalAudioBacklog.removeAll()
-        for buffer in pending {
-            appendExternalBuffer(buffer)
+        for packet in pending {
+            appendExternalBuffer(packet.buffer)
         }
     }
 
     // MARK: - 引擎准备
 
-    /// 校验支持性、安装语言模型并创建 Analyzer
-    private func prepareAnalyzer() async -> (analyzer: SpeechAnalyzer, transcriber: SpeechTranscriber)? {
-        guard SpeechTranscriber.isAvailable else {
-            onError?("当前设备不支持新一代本机识别。")
-            return nil
+    private enum StartupError: LocalizedError {
+        case unsupportedDevice
+        case unsupportedLocale(String)
+        case missingAudioFormat
+        case modelInstallation(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedDevice:
+                return "当前设备不支持新一代本机识别。"
+            case .unsupportedLocale(let identifier):
+                return "当前引擎暂不支持所选语言（\(identifier)）。"
+            case .missingAudioFormat:
+                return "语音识别无法取得可用的音频格式。"
+            case .modelInstallation(let error):
+                return "语音模型安装失败：\(error.localizedDescription)"
+            }
         }
-        guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
-            onError?("当前引擎暂不支持所选语言（\(locale.identifier)），请更换语言后重试。")
-            return nil
-        }
+    }
+
+    /// 准备期间只使用局部变量。取消或超时的启动不能覆盖新会话的格式或输入流。
+    private func startAnalysis(generation: Int) async throws {
+        guard SpeechTranscriber.isAvailable else { throw StartupError.unsupportedDevice }
+        let requestedLocale = locale
+        let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale)
+        guard isCurrent(generation) else { return }
+        guard let supportedLocale else { throw StartupError.unsupportedLocale(requestedLocale.identifier) }
 
         // volatile + fast：优先保证边说边出字，避免结果攒到一段结束才刷新
         let transcriber = SpeechTranscriber(
@@ -255,67 +242,72 @@ final class SpeechRecognizerService: SpeechRecognizing {
             reportingOptions: [.volatileResults, .fastResults],
             attributeOptions: [.audioTimeRange]
         )
+        try await installModelIfNeeded(for: supportedLocale, transcriber: transcriber)
+        guard isCurrent(generation) else { return }
+        let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
+        guard isCurrent(generation) else { return }
+        guard let format else { throw StartupError.missingAudioFormat }
+
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        self.analyzer = analyzer
+        try? await analyzer.prepareToAnalyze(in: format)
+        guard isCurrent(generation) else { return }
+
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        analyzerFormat = format
+        inputContinuation = continuation
+        sessionStartDate = Date()
+        analysisTimeOffset = 0
+        lastSegmentEnd = 0
+        startResultsLoop(with: transcriber, generation: generation)
+        try await analyzer.start(inputSequence: stream)
+        guard isCurrent(generation) else { return }
+        isRunning = true
+    }
+
+    private func installModelIfNeeded(for locale: Locale, transcriber: SpeechTranscriber) async throws {
+        let installed = await SpeechTranscriber.installedLocales
+        let isInstalled = installed.contains { $0.identifier(.bcp47) == locale.identifier(.bcp47) }
+        guard !isInstalled else { return }
         do {
-            // 首次使用某语言时下载模型；已安装时直接跳过
-            let installed = await SpeechTranscriber.installedLocales
-            let isInstalled = installed.contains {
-                $0.identifier(.bcp47) == supportedLocale.identifier(.bcp47)
-            }
-            if !isInstalled,
-               let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            try Task.checkCancellation()
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                try Task.checkCancellation()
                 try await request.downloadAndInstall()
             }
         } catch {
-            onError?("语音模型安装失败：\(error.localizedDescription)")
-            return nil
+            throw StartupError.modelInstallation(error)
         }
-
-        analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        // 预加载识别资源，降低第一句字幕的延迟
-        if let analyzerFormat {
-            try? await analyzer.prepareToAnalyze(in: analyzerFormat)
-        }
-        return (analyzer, transcriber)
     }
 
-    /// 启动输入流并持续消费识别结果
-    private func beginAnalysis(_ setup: (analyzer: SpeechAnalyzer, transcriber: SpeechTranscriber)) async throws {
-        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        inputContinuation = continuation
-        // 先开始消费结果，再启动分析，避免首批结果到达时无人接收
-        startResultsLoop(with: setup.transcriber)
-        try await setup.analyzer.start(inputSequence: stream)
-    }
-
-    private func startResultsLoop(with transcriber: SpeechTranscriber) {
-        resultsTask?.cancel()
-        // 结果消费放在主线程之外：iOS 26 的 SpeechTranscriber 若在主 actor 上迭代，
-        // 结果可能被攒到整段处理完才一起刷新（表现为必须重新进入 App 才看到字幕）。
+    private func startResultsLoop(with transcriber: SpeechTranscriber, generation: Int) {
+        // 在主 actor 外消费结果，避免实时字幕被攒到一整段处理完才刷新。
         resultsTask = Task.detached { [weak self] in
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !text.isEmpty else { continue }
-                    let isFinal = result.isFinal
-                    let audioStart = CMTimeGetSeconds(result.range.start)
-                    await MainActor.run {
-                        guard let self, self.isRunning else { return }
-                        self.handleResult(text: text, isFinal: isFinal, audioStart: audioStart)
-                    }
+                    guard !text.isEmpty, !Task.isCancelled else { continue }
+                    await self?.receiveResult(
+                        text, isFinal: result.isFinal, audioStart: CMTimeGetSeconds(result.range.start),
+                        generation: generation
+                    )
                 }
             } catch {
-                await MainActor.run {
-                    guard let self, self.isRunning else { return }
-                    self.onError?("识别中断：\(error.localizedDescription)")
-                    if self.isExternalAudio {
-                        self.stopExternalAudio()
-                    } else {
-                        self.tearDown()
-                    }
-                }
+                await self?.handleResultsEnded(generation: generation, message: "识别中断：\(error.localizedDescription)")
+                return
             }
+            await self?.handleResultsEnded(generation: generation, message: "语音识别意外结束。")
         }
+    }
+
+    private func receiveResult(_ text: String, isFinal: Bool, audioStart: TimeInterval, generation: Int) {
+        guard isCurrent(generation), isRunning else { return }
+        handleResult(text: text, isFinal: isFinal, audioStart: audioStart)
+    }
+
+    private func handleResultsEnded(generation: Int, message: String) {
+        guard isCurrent(generation) else { return }
+        finishAnalysisWithError(message)
     }
 
     /// 结果处理：volatile 用于实时预览，final 落库为一条字幕
@@ -341,6 +333,7 @@ final class SpeechRecognizerService: SpeechRecognizing {
         deactivateAudioSession: Bool,
         preserveBufferedAudio: Bool = false
     ) {
+        generation += 1
         isRunning = false
         isExternalAudio = preserveBufferedAudio
         if !preserveBufferedAudio {
@@ -372,11 +365,9 @@ final class SpeechRecognizerService: SpeechRecognizing {
 
         self.analyzer = nil
         analyzerFormat = nil
-        if deactivateAudioSession {
-            // 会话失活可能阻塞，放到后台执行，避免停止识别时卡住主线程
-            DispatchQueue.global(qos: .utility).async {
-                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            }
+        if deactivateAudioSession, hasMicrophoneAudioSession {
+            hasMicrophoneAudioSession = false
+            AppAudioSession.deactivate()
         }
     }
 
@@ -385,81 +376,9 @@ final class SpeechRecognizerService: SpeechRecognizing {
     /// 段落落库：优先使用识别结果携带的音频时间，缺失时沿用上一段结束时间
     private func submitSegment(_ text: String, audioStart: TimeInterval?) {
         let now = Date().timeIntervalSince(sessionStartDate)
-        var start = audioStart ?? lastSegmentEnd
-        if !start.isFinite || start < 0 {
-            start = lastSegmentEnd
-        }
-        // 音频时间轴可能略滞后于墙钟时间，限制在当前时长内
-        start = min(start, now)
+        let elapsedAudio = audioStart.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        let start = min(elapsedAudio.map { $0 + analysisTimeOffset } ?? lastSegmentEnd, now)
         lastSegmentEnd = now
         onFinalSegment?(text, start)
-    }
-
-    // MARK: - 音频转换
-
-    /// 把麦克风 / 外部音频缓冲转换成识别引擎需要的格式
-    private nonisolated static func convert(
-        _ buffer: AVAudioPCMBuffer,
-        using converter: AVAudioConverter,
-        to format: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-        let ratio = format.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-        guard capacity > 0,
-              let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
-
-        var supplied = false
-        var error: NSError?
-        converter.convert(to: output, error: &error) { _, status in
-            if supplied {
-                status.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            status.pointee = .haveData
-            return buffer
-        }
-        guard error == nil, output.frameLength > 0 else { return nil }
-        return output
-    }
-}
-
-/// 外部音频 → 识别格式转换器：只在串行后台队列上调用，避免重采样占用主线程
-private final class ExternalAudioConverter {
-    private var converter: AVAudioConverter?
-    private var inputFormat: AVAudioFormat?
-    private var outputFormat: AVAudioFormat?
-
-    func convert(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) -> AVAudioPCMBuffer? {
-        let input = buffer.format
-        if converter == nil
-            || inputFormat?.sampleRate != input.sampleRate
-            || inputFormat?.channelCount != input.channelCount
-            || outputFormat?.sampleRate != targetFormat.sampleRate
-            || outputFormat?.channelCount != targetFormat.channelCount {
-            converter = AVAudioConverter(from: input, to: targetFormat)
-            inputFormat = input
-            outputFormat = targetFormat
-        }
-        guard let converter else { return nil }
-
-        let ratio = targetFormat.sampleRate / input.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-        guard capacity > 0,
-              let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return nil }
-
-        var supplied = false
-        var error: NSError?
-        converter.convert(to: output, error: &error) { _, status in
-            if supplied {
-                status.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            status.pointee = .haveData
-            return buffer
-        }
-        guard error == nil, output.frameLength > 0 else { return nil }
-        return output
     }
 }

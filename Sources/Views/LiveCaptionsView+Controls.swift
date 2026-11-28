@@ -72,17 +72,11 @@ extension LiveCaptionsView {
         .accessibilityLabel(settings.audioSourceMode == .microphone ? "切换到系统共享音频" : "切换到麦克风")
     }
 
-    /// 切换音频来源；切换后主按钮会以原生弹簧动画替换为广播按钮/麦克风按钮
+    /// 切换来源时统一结束旧会话，主按钮按新来源切换
     private func switchAudioSource() {
-        if viewModel.state == .listening {
-            viewModel.stop()
-        }
+        let nextMode: AudioSourceMode = settings.audioSourceMode == .microphone ? .systemAudio : .microphone
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            settings.audioSourceMode = settings.audioSourceMode == .microphone ? .systemAudio : .microphone
-            settings.objectWillChange.send()
-        }
-        if settings.audioSourceMode == .systemAudio {
-            viewModel.prepareSystemAudioServer()
+            viewModel.setAudioSourceMode(nextMode)
         }
     }
 

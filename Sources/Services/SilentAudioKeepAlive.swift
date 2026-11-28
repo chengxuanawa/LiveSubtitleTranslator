@@ -13,9 +13,8 @@ final class SilentAudioKeepAlive {
     private var isActive = false
     private var interruptionObserver: NSObjectProtocol?
     private var mediaServicesObserver: NSObjectProtocol?
-    /// 音频会话的激活/失活可能阻塞主线程，统一放到串行后台队列
-    private let sessionQueue = DispatchQueue(label: "com.example.sublingo.keepalive.session")
     private var isStarting = false
+    private var activationGeneration = 0
 
     init() {
         let center = NotificationCenter.default
@@ -55,8 +54,9 @@ final class SilentAudioKeepAlive {
         if let player, player.isPlaying { return }
         guard !isStarting else { return }
         isStarting = true
+        let generation = activationGeneration
         // 会话激活在后台完成，避免点按共享按钮时卡住主线程、系统面板迟迟不出现
-        sessionQueue.async { [weak self] in
+        AppAudioSession.queue.async { [weak self] in
             let session = AVAudioSession.sharedInstance()
             var activated = false
             do {
@@ -67,7 +67,7 @@ final class SilentAudioKeepAlive {
                 activated = false
             }
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.activationGeneration == generation else { return }
                 self.isStarting = false
                 guard activated, self.isActive else { return }
                 self.setupPlayerIfNeeded()
@@ -103,13 +103,13 @@ final class SilentAudioKeepAlive {
     }
 
     func stop() {
+        guard isActive else { return }
         isActive = false
+        activationGeneration += 1
+        isStarting = false
         player?.stop()
         player = nil
-        // 失活同样放到后台，避免结束共享时主线程被音频会话卡住
-        sessionQueue.async {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        AppAudioSession.deactivate()
     }
 
     /// 打断或媒体服务重置后恢复播放；直接 start() 会重新激活会话并重建播放器

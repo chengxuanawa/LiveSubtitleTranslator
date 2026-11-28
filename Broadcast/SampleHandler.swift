@@ -7,9 +7,8 @@ import ReplayKit
 final class SampleHandler: RPBroadcastSampleHandler {
 
     private let queue = DispatchQueue(label: "com.example.livesubtitletranslator.broadcast.audio")
+    // 广播状态和连接的修改集中在 queue 上。
     private var connection: NWConnection?
-    /// 连接状态会跨线程读取（采样回调 / 网络队列），用锁保护
-    private let stateLock = NSLock()
     private var isConnected = false
     private var isBroadcasting = false
     private var reconnectScheduled = false
@@ -21,18 +20,6 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var pendingPackets: [Data] = []
     /// 最多暂存的音频包数量（约 5 秒）
     private static let maxPendingPackets = 250
-
-    private var connected: Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return isConnected
-    }
-
-    private func setConnected(_ value: Bool) {
-        stateLock.lock()
-        isConnected = value
-        stateLock.unlock()
-    }
 
     // MARK: - 广播生命周期
 
@@ -57,7 +44,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             self.pendingPackets.removeAll()
             let oldConnection = self.connection
             self.connection = nil
-            self.setConnected(false)
+            self.isConnected = false
             guard let oldConnection else { return }
             // 立即通知主 App 共享已停止，避免它等心跳超时才收尾
             oldConnection.send(content: AudioStreamProtocol.stopPacket, completion: .contentProcessed { _ in
@@ -92,6 +79,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         guard let port = NWEndpoint.Port(rawValue: AudioStreamProtocol.port) else { return }
         let oldConnection = connection
         connection = nil
+        isConnected = false
         oldConnection?.cancel()
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
@@ -101,18 +89,28 @@ final class SampleHandler: RPBroadcastSampleHandler {
             guard let self, let connection, self.connection === connection else { return }
             switch state {
             case .ready:
-                self.setConnected(true)
+                self.isConnected = true
                 self.flushPendingPackets()
                 self.startHeartbeat()
             case .failed, .cancelled, .waiting:
-                self.setConnected(false)
-                // 主 App 的本地监听可能还没就绪或被系统挂起，1 秒后自动重连
-                self.scheduleReconnect()
+                self.disconnectAndRetry(connection)
             default:
                 break
             }
         }
         connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 3) { [weak self, weak connection] in
+            guard let self, let connection, !self.isConnected else { return }
+            self.disconnectAndRetry(connection)
+        }
+    }
+
+    private func disconnectAndRetry(_ failedConnection: NWConnection) {
+        guard connection === failedConnection else { return }
+        connection = nil
+        isConnected = false
+        failedConnection.cancel()
+        scheduleReconnect()
     }
 
     /// 没有音频播放时也要让主 App 知道广播仍在运行：
@@ -130,9 +128,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 self.heartbeatScheduled = false
                 return
             }
-            if self.connected {
-                self.send(Self.heartbeatPacket)
-            }
+            self.send(Self.heartbeatPacket, cacheWhenDisconnected: false)
             self.scheduleHeartbeatTick()
         }
     }
@@ -146,24 +142,21 @@ final class SampleHandler: RPBroadcastSampleHandler {
         queue.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self else { return }
             self.reconnectScheduled = false
-            guard self.isBroadcasting, !self.connected else { return }
+            guard self.isBroadcasting, self.connection == nil else { return }
             self.connect()
         }
     }
 
-    private func send(_ packet: Data) {
-        guard let connection, connected else {
-            // 连接尚未就绪或刚断开：先缓存，等重连成功后补发
-            enqueuePending(packet)
-            scheduleReconnect()
+    private func send(_ packet: Data, cacheWhenDisconnected: Bool = true) {
+        guard let connection, isConnected else {
+            if cacheWhenDisconnected { enqueuePending(packet) }
             return
         }
         connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
-            guard let self, let connection, error != nil, self.connection === connection else { return }
-            // 发送失败说明连接已经不可用，主动标记断线并重连，避免录屏还在跑但没有音频
-            self.queue.async {
-                self.setConnected(false)
-                self.scheduleReconnect()
+            guard error != nil, let self else { return }
+            self.queue.async { [weak self, weak connection] in
+                guard let self, let connection else { return }
+                self.disconnectAndRetry(connection)
             }
         })
     }

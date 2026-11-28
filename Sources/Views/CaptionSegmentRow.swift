@@ -50,16 +50,7 @@ struct CaptionSegmentRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if speakerLabel != nil, speakerIsRightAligned {
-                Spacer(minLength: 64)
-            }
-            bubble
-            if speakerLabel != nil, !speakerIsRightAligned {
-                Spacer(minLength: 64)
-            }
-        }
-        .padding(.horizontal, 12)
+        bubble.padding(.horizontal, 12)
     }
 
     /// 气泡本体：内容、入场动画与长按菜单
@@ -118,12 +109,7 @@ struct CaptionSegmentRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(speakerBackgroundTint)
-        )
-        .captionBubbleBackground()
-        .frame(maxWidth: speakerLabel == nil ? .infinity : 560)
+        .captionBubbleBackground(speakerLabel: speakerLabel)
         .onChange(of: segment.displayTranslatedText) { oldValue, newValue in
             // 译文是异步回填的：首次出现时同样播一遍模糊 + 上浮动画
             guard oldValue == nil, newValue != nil else { return }
@@ -265,17 +251,5 @@ struct CaptionSegmentRow: View {
                 )
         )
         .shadow(color: Color.purple.opacity(0.18), radius: 8, x: 0, y: 3)
-    }
-
-    // MARK: - 说话人左右布局
-
-    /// 男声靠左、女声靠右；没有说话人时保持居中满宽
-    private var speakerIsRightAligned: Bool {
-        SpeakerPalette.isRightAligned(label: speakerLabel)
-    }
-
-    private var speakerBackgroundTint: Color {
-        guard speakerLabel != nil else { return .clear }
-        return SpeakerPalette.tint(for: speakerLabel).opacity(0.16)
     }
 }
